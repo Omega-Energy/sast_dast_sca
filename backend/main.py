@@ -26,6 +26,8 @@ REPORT_DIR = Path("/app/reports")
 
 # Active WebSocket connections per scan_id
 _ws_clients: Dict[int, List[WebSocket]] = defaultdict(list)
+# Buffered log lines per scan_id (for late WS connections)
+_scan_logs: Dict[int, List[str]] = defaultdict(list)
 # Running scan tasks
 _scan_tasks: Dict[int, asyncio.Task] = {}
 
@@ -134,6 +136,7 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
 
     async def log_cb(msg: str):
         logs.append(msg)
+        _scan_logs[scan_id].append(msg)
         await _broadcast(scan_id, msg)
 
     try:
@@ -179,6 +182,10 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
 
     finally:
         _scan_tasks.pop(scan_id, None)
+        async def _clear_logs():
+            await asyncio.sleep(300)
+            _scan_logs.pop(scan_id, None)
+        asyncio.create_task(_clear_logs())
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
@@ -309,15 +316,17 @@ async def get_stats():
 @app.websocket("/ws/scans/{scan_id}/log")
 async def scan_log_ws(websocket: WebSocket, scan_id: int):
     await websocket.accept()
+    # Replay buffered log lines so late clients catch up
+    for past_msg in _scan_logs.get(scan_id, []):
+        try:
+            await websocket.send_text(json.dumps({"type": "log", "message": past_msg}))
+        except Exception:
+            return
     _ws_clients[scan_id].append(websocket)
     try:
         async with SessionFactory() as session:
             scan = await session.get(Scan, scan_id)
         if scan and scan.status in ("done", "failed"):
-            await websocket.send_text(json.dumps({
-                "type": "log",
-                "message": f"Scan already finished with status: {scan.status}"
-            }))
             await websocket.send_text(json.dumps({
                 "type": "log",
                 "message": f"__{'DONE' if scan.status == 'done' else 'FAILED'}__"

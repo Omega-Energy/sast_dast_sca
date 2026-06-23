@@ -67,13 +67,17 @@ export default function ScanDetail() {
   useEffect(() => {
     if (!id || !scan) return;
     if (scan.status !== "running") return;
-    const wsUrl = `ws://${window.location.host}/api/scans/${id}/ws`;
+    const wsUrl = `ws://${window.location.host}/ws/scans/${id}/log`;
     const ws = new WebSocket(wsUrl);
     ws.onmessage = (e) => {
-      setLogs((prev) => {
-        const next = [...prev, e.data];
-        return next.slice(-100); // keep last 100 lines
-      });
+      try {
+        const data = JSON.parse(e.data);
+        const msg: string = data.message ?? e.data;
+        if (msg === "__DONE__" || msg === "__FAILED__") return;
+        setLogs((prev) => [...prev, msg].slice(-100));
+      } catch {
+        setLogs((prev) => [...prev, e.data].slice(-100));
+      }
     };
     ws.onerror = () => ws.close();
     return () => ws.close();
