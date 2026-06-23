@@ -40,12 +40,20 @@ def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
         return {"findings": [], "skipped": True, "reason": "docker SDK not available"}
 
     dockerfile_path = _find_dockerfile(repo_dir)
+    _auto_generated = False
+
     if dockerfile_path is None:
-        return {
-            "findings": [],
-            "skipped": True,
-            "reason": "No Dockerfile found in repository — DAST skipped",
-        }
+        project_type = _detect_project_type(repo_dir)
+        if project_type:
+            log(f"DAST: no Dockerfile found, detected project type '{project_type}' — auto-generating Dockerfile…")
+            dockerfile_path = _generate_dockerfile(repo_dir, project_type)
+            _auto_generated = True
+        if dockerfile_path is None:
+            return {
+                "findings": [],
+                "skipped": True,
+                "reason": "No Dockerfile found and project type could not be detected — DAST skipped",
+            }
 
     try:
         client = docker.from_env()
@@ -160,6 +168,11 @@ def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
             pass
         import shutil
         shutil.rmtree(f"/tmp/zap-{run_id}", ignore_errors=True)
+        if _auto_generated and dockerfile_path and dockerfile_path.exists():
+            try:
+                dockerfile_path.unlink()
+            except Exception:
+                pass
 
 
 def _find_dockerfile(repo_dir: Path) -> Path | None:
@@ -172,12 +185,107 @@ def _find_dockerfile(repo_dir: Path) -> Path | None:
     for c in candidates:
         if c.exists():
             return c
-    # Recursive search limited to depth 2
+    # Recursive search limited to depth 3
     for p in repo_dir.rglob("Dockerfile"):
         parts = p.relative_to(repo_dir).parts
         if len(parts) <= 3:
             return p
     return None
+
+
+# ── Project type detection & auto-Dockerfile ──────────────────────────────────
+
+def _detect_project_type(repo_dir: Path) -> str | None:
+    """Detect project type from file signatures."""
+    checks = [
+        ("python",  ["requirements.txt", "setup.py", "pyproject.toml", "app.py", "main.py", "manage.py"]),
+        ("node",    ["package.json"]),
+        ("java",    ["pom.xml", "build.gradle", "build.gradle.kts"]),
+        ("go",      ["go.mod"]),
+        ("php",     ["composer.json", "index.php"]),
+        ("ruby",    ["Gemfile"]),
+    ]
+    for project_type, signatures in checks:
+        if any((repo_dir / sig).exists() for sig in signatures):
+            return project_type
+    return None
+
+
+def _detect_python_entrypoint(repo_dir: Path) -> str:
+    """Try to find the main Python web app entrypoint."""
+    # Priority order
+    candidates = ["app.py", "main.py", "run.py", "server.py", "manage.py", "wsgi.py", "asgi.py"]
+    for c in candidates:
+        if (repo_dir / c).exists():
+            return c
+    # Look for any .py with Flask/FastAPI/Django import
+    for py in repo_dir.glob("*.py"):
+        try:
+            content = py.read_text(errors="replace")
+            if any(kw in content for kw in ["Flask(", "FastAPI(", "Starlette(", "django"]):
+                return py.name
+        except Exception:
+            continue
+    return "app.py"  # fallback
+
+
+_DOCKERFILE_TEMPLATES = {
+    "python": """\
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+EXPOSE 8080
+ENV PORT=8080 HOST=0.0.0.0
+CMD ["python", "{entrypoint}"]
+""",
+    "node": """\
+FROM node:20-slim
+WORKDIR /app
+COPY . .
+RUN npm install --production 2>/dev/null || true
+EXPOSE 8080
+ENV PORT=8080
+CMD ["node", "server.js"]
+""",
+    "java": """\
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY . .
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
+""",
+    "go": """\
+FROM golang:1.21-alpine AS build
+WORKDIR /app
+COPY . .
+RUN go build -o app . 2>/dev/null || true
+FROM alpine:latest
+WORKDIR /app
+COPY --from=build /app/app .
+EXPOSE 8080
+CMD ["./app"]
+""",
+    "php": """\
+FROM php:8.2-apache
+COPY . /var/www/html/
+RUN sed -i 's/80/8080/g' /etc/apache2/ports.conf /etc/apache2/sites-available/*.conf 2>/dev/null || true
+EXPOSE 8080
+""",
+}
+
+
+def _generate_dockerfile(repo_dir: Path, project_type: str) -> Path | None:
+    """Write a temporary auto-generated Dockerfile into repo_dir."""
+    template = _DOCKERFILE_TEMPLATES.get(project_type)
+    if not template:
+        return None
+    if project_type == "python":
+        entrypoint = _detect_python_entrypoint(repo_dir)
+        template = template.format(entrypoint=entrypoint)
+    dockerfile = repo_dir / "_auto_Dockerfile"
+    dockerfile.write_text(template)
+    return dockerfile
 
 
 def _parse_zap_report(report_path: Path) -> list:
