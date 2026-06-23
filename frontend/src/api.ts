@@ -13,6 +13,7 @@ export interface ScanSummary {
   gitleaks_count: number;
   yara_count: number;
   dast_count: number;
+  binary_count: number;
   total_count: number;
   error: string | null;
 }
@@ -25,6 +26,7 @@ export interface ScanResults {
   gitleaks: { findings: GitleaksFinding[]; error?: string };
   yara: { findings: YaraFinding[]; error?: string };
   dast: { findings: DastFinding[]; skipped?: boolean; reason?: string; target_url?: string };
+  binary: { findings: BinaryFinding[] };
 }
 
 export interface BanditFinding {
@@ -38,6 +40,11 @@ export interface SemgrepFinding {
 
 export interface PipFinding {
   package: string; version: string; vuln_id: string; detail: string; fix: string;
+}
+
+export interface BinaryFinding {
+  file: string; size_kb: number; entropy: number; ext: string; severity: string;
+  issues: { type: string; severity: string; detail: string; match: string }[];
 }
 
 export interface DastFinding {
@@ -58,7 +65,7 @@ export interface GitleaksFinding {
 export interface Stats {
   total_scans: number; done: number; failed: number; running: number;
   total_findings: number; bandit_total: number; semgrep_total: number;
-  pip_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number;
+  pip_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number; binary_total: number;
   history: {
     id: number; repo_name: string; created_at: string; total_count: number;
     bandit_count: number; semgrep_count: number; pip_audit_count: number;
@@ -101,6 +108,16 @@ export const api = {
 
   async getStats(): Promise<Stats> {
     const r = await fetch(`${BASE}/api/stats`);
+    return r.json();
+  },
+
+  async createLocalScan(local_path: string, name: string): Promise<ScanSummary> {
+    const r = await fetch(`${BASE}/api/scans/local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ local_path, name }),
+    });
+    if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
 

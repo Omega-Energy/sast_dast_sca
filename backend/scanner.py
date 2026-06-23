@@ -39,12 +39,13 @@ async def stream_scan(
     branch: str,
     github_token: str,
     log_cb: Callable,
+    local_path: str = "",
 ) -> dict:
     """
     Run full scan pipeline, calling log_cb(line) for each log line.
+    If local_path is set, skip git clone and scan that directory directly.
     Returns the results dict.
     """
-    repo_dir = REPO_BASE / str(scan_id)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     async def log(msg: str):
@@ -52,22 +53,32 @@ async def stream_scan(
         if asyncio.iscoroutine(result):
             await result
 
-    # Clone
-    await log(f"Cloning {repo_url} (branch: {branch})…")
-    url = repo_url
-    if github_token and "github.com" in url:
-        url = url.replace("https://", f"https://{github_token}@")
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir)
+    # ── Source: local dir or git clone ───────────────────────────────────────
+    if local_path:
+        repo_dir = Path(local_path)
+        if not repo_dir.exists() or not repo_dir.is_dir():
+            raise ValueError(f"Local path does not exist or is not a directory: {local_path}")
+        await log(f"Scanning local directory: {repo_dir}")
+        _cloned = False
+    else:
+        repo_dir = REPO_BASE / str(scan_id)
+        await log(f"Cloning {repo_url} (branch: {branch})…")
+        url = repo_url
+        if github_token and "github.com" in url:
+            url = url.replace("https://", f"https://{github_token}@")
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+        _cloned = True
 
-    proc = await asyncio.create_subprocess_exec(
-        "git", "clone", "--depth=1", "--branch", branch, url, str(repo_dir),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"git clone failed: {stderr.decode()}")
-    await log("Clone complete.")
+    if _cloned:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth=1", "--branch", branch, url, str(repo_dir),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"git clone failed: {stderr.decode()}")
+        await log("Clone complete.")
 
     results: dict = {
         "meta": {
@@ -185,6 +196,11 @@ async def stream_scan(
     else:
         results["yara"] = {"findings": [], "error": "yara-python not available"}
 
+    # Binary analysis
+    await log("Running binary analysis (strings + entropy)…")
+    results["binary"] = await asyncio.to_thread(_run_binary_analysis, repo_dir)
+    await log(f"Binary: {len(results['binary']['findings'])} suspicious binaries.")
+
     # DAST
     if DAST_AVAILABLE:
         await log("Running DAST (OWASP ZAP)…")
@@ -204,8 +220,9 @@ async def stream_scan(
     else:
         results["dast"] = {"findings": [], "skipped": True, "reason": "docker SDK not available"}
 
-    # Cleanup
-    shutil.rmtree(repo_dir, ignore_errors=True)
+    # Cleanup: only remove cloned repos, never touch local paths
+    if _cloned:
+        shutil.rmtree(repo_dir, ignore_errors=True)
     await log("Scan complete.")
     return results
 
@@ -249,3 +266,109 @@ def _run_yara(repo_dir: Path) -> dict:
         return {"findings": findings}
     except Exception as e:
         return {"findings": [], "error": str(e)}
+
+
+# ── Binary file analysis ───────────────────────────────────────────────────────
+
+BINARY_EXTS = {
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".dat", ".pyd",
+    ".pyc", ".pyo", ".class", ".jar", ".war", ".ear",
+    ".o", ".obj", ".lib", ".a",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+}
+
+SUSPICIOUS_STRINGS_RE = [
+    (r"AKIA[0-9A-Z]{16}", "AWS Access Key", "HIGH"),
+    (r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----", "Private Key", "HIGH"),
+    (r"(?:password|passwd|secret)\s*[=:]\s*\S{6,}", "Hardcoded credential", "MEDIUM"),
+    (r"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", "Hardcoded IP URL", "MEDIUM"),
+    (r"(?:/bin/sh|/bin/bash|cmd\.exe)", "Shell reference", "MEDIUM"),
+    (r"(?:CreateRemoteThread|VirtualAlloc|WriteProcessMemory)", "Win32 injection API", "HIGH"),
+    (r"(?:socket\.connect|recv\(|send\()", "Network socket", "LOW"),
+]
+
+
+def _shannon_entropy(data: bytes) -> float:
+    """Calculate Shannon entropy (0.0 - 8.0). >7.0 = likely packed/encrypted."""
+    import math
+    if not data:
+        return 0.0
+    freq = [0] * 256
+    for b in data:
+        freq[b] += 1
+    entropy = 0.0
+    length = len(data)
+    for f in freq:
+        if f:
+            p = f / length
+            entropy -= p * math.log2(p)
+    return round(entropy, 2)
+
+
+def _extract_strings(data: bytes, min_len: int = 6) -> list[str]:
+    """Extract printable ASCII strings from binary data."""
+    import re
+    return re.findall(rb"[ -~]{%d,}" % min_len, data)
+
+
+def _run_binary_analysis(repo_dir: Path) -> dict:
+    """Scan binary files for suspicious strings, entropy, and known patterns."""
+    import re
+    findings = []
+    compiled = [(re.compile(pat, re.IGNORECASE), desc, sev) for pat, desc, sev in SUSPICIOUS_STRINGS_RE]
+
+    for path in repo_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in BINARY_EXTS:
+            continue
+        if path.stat().st_size > 10_000_000:  # skip >10MB
+            continue
+
+        try:
+            data = path.read_bytes()
+        except Exception:
+            continue
+
+        rel = str(path.relative_to(repo_dir))
+        entropy = _shannon_entropy(data)
+        strings = _extract_strings(data)
+        strings_text = b"\n".join(strings).decode(errors="replace")
+
+        file_findings = []
+
+        # Entropy check — packed/encrypted binary
+        if entropy > 7.2:
+            file_findings.append({
+                "type": "high_entropy",
+                "severity": "MEDIUM",
+                "detail": f"Shannon entropy {entropy}/8.0 — possibly packed, encrypted or obfuscated",
+                "match": "",
+            })
+
+        # Suspicious string patterns
+        for pattern, desc, sev in compiled:
+            m = pattern.search(strings_text)
+            if m:
+                file_findings.append({
+                    "type": "suspicious_string",
+                    "severity": sev,
+                    "detail": desc,
+                    "match": m.group(0)[:120],
+                })
+
+        if file_findings:
+            findings.append({
+                "file": rel,
+                "size_kb": round(path.stat().st_size / 1024, 1),
+                "entropy": entropy,
+                "ext": path.suffix.lower(),
+                "issues": file_findings,
+                "severity": max(
+                    (f["severity"] for f in file_findings),
+                    key=lambda s: {"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(s, 0),
+                ),
+            })
+
+    findings.sort(key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(x["severity"], 3))
+    return {"findings": findings}

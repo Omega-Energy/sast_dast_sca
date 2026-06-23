@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
         for col, typedef in [
             ("yara_count", "INTEGER NOT NULL DEFAULT 0"),
             ("dast_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("binary_count", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             try:
                 await conn.execute(
@@ -69,6 +70,11 @@ class ScanRequest(BaseModel):
     github_token: str = ""
 
 
+class LocalScanRequest(BaseModel):
+    local_path: str
+    name: str = ""  # optional display name
+
+
 class ScanSummary(BaseModel):
     id: int
     repo_url: str
@@ -84,6 +90,7 @@ class ScanSummary(BaseModel):
     gitleaks_count: int
     yara_count: int
     dast_count: int
+    binary_count: int
     total_count: int
     error: Optional[str]
 
@@ -105,7 +112,7 @@ async def _broadcast(scan_id: int, msg: str):
         _ws_clients[scan_id].remove(ws)
 
 
-async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str):
+async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_path: str = ""):
     async with SessionFactory() as session:
         scan = await session.get(Scan, scan_id)
         scan.status = "running"
@@ -120,13 +127,14 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str):
         await _broadcast(scan_id, msg)
 
     try:
-        results = await stream_scan(scan_id, repo_url, branch, token, log_cb)
+        results = await stream_scan(scan_id, repo_url, branch, token, log_cb, local_path=local_path)
         b = len(results.get("bandit", {}).get("findings", []))
         s = len(results.get("semgrep", {}).get("findings", []))
         p = len(results.get("pip_audit", {}).get("findings", []))
         g = len(results.get("gitleaks", {}).get("findings", []))
         y = len(results.get("yara", {}).get("findings", []))
         da = len(results.get("dast", {}).get("findings", []))
+        bi = len(results.get("binary", {}).get("findings", []))
 
         async with SessionFactory() as session:
             scan = await session.get(Scan, scan_id)
@@ -139,7 +147,8 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str):
             scan.gitleaks_count = g
             scan.yara_count = y
             scan.dast_count = da
-            scan.total_count = b + s + p + g + y + da
+            scan.binary_count = bi
+            scan.total_count = b + s + p + g + y + da + bi
             scan.results_json = json.dumps(results, ensure_ascii=False)
             session.add(scan)
             await session.commit()
@@ -179,6 +188,29 @@ async def create_scan(req: ScanRequest):
         sid = scan.id
 
     task = asyncio.create_task(_run_scan(sid, req.repo_url, req.branch, req.github_token))
+    _scan_tasks[sid] = task
+
+    async with SessionFactory() as session:
+        scan = await session.get(Scan, sid)
+        return _to_summary(scan)
+
+
+@app.post("/api/scans/local", response_model=ScanSummary)
+async def create_local_scan(req: LocalScanRequest):
+    display_name = req.name or Path(req.local_path).name
+    async with SessionFactory() as session:
+        scan = Scan(
+            repo_url=f"local://{req.local_path}",
+            repo_name=display_name,
+            branch="local",
+            status="pending",
+        )
+        session.add(scan)
+        await session.commit()
+        await session.refresh(scan)
+        sid = scan.id
+
+    task = asyncio.create_task(_run_scan(sid, f"local://{req.local_path}", "local", "", local_path=req.local_path))
     _scan_tasks[sid] = task
 
     async with SessionFactory() as session:
@@ -243,6 +275,7 @@ async def get_stats():
         "gitleaks_total": sum(s.gitleaks_count for s in done),
         "yara_total": sum(s.yara_count for s in done),
         "dast_total": sum(s.dast_count for s in done),
+        "binary_total": sum(s.binary_count for s in done),
         "history": [
             {
                 "id": s.id,
@@ -324,6 +357,7 @@ def _to_summary(scan: Scan) -> ScanSummary:
         gitleaks_count=scan.gitleaks_count,
         yara_count=scan.yara_count,
         dast_count=scan.dast_count,
+        binary_count=scan.binary_count,
         total_count=scan.total_count,
         error=scan.error,
     )

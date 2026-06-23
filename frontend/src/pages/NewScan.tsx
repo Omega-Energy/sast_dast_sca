@@ -1,13 +1,16 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ScanSearch, Eye, EyeOff } from "lucide-react";
+import { ScanSearch, Eye, EyeOff, Github, FolderOpen } from "lucide-react";
 import { api, ScanSummary } from "../api";
 
 export default function NewScan() {
+  const [mode, setMode] = useState<"github" | "local">("github");
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
+  const [localPath, setLocalPath] = useState("");
+  const [localName, setLocalName] = useState("");
   const [loading, setLoading] = useState(false);
   const [scan, setScan] = useState<ScanSummary | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -23,12 +26,15 @@ export default function NewScan() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!repoUrl.trim()) return;
+    if (mode === "github" && !repoUrl.trim()) return;
+    if (mode === "local" && !localPath.trim()) return;
     setLoading(true);
     setLogs([]);
     setDone(false);
     try {
-      const s = await api.createScan(repoUrl.trim(), branch.trim() || "main", token.trim());
+      const s = mode === "github"
+        ? await api.createScan(repoUrl.trim(), branch.trim() || "main", token.trim())
+        : await api.createLocalScan(localPath.trim(), localName.trim());
       setScan(s);
       const ws = api.wsLog(s.id);
       ws.onmessage = (ev) => {
@@ -60,62 +66,80 @@ export default function NewScan() {
     <div className="p-8 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">New Scan</h1>
-        <p className="text-slate-400 text-sm mt-1">Scan a GitHub repository with Bandit, Semgrep, pip-audit and Gitleaks</p>
+        <p className="text-slate-400 text-sm mt-1">Scan a GitHub repository or a local directory</p>
       </div>
 
       <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-xl p-6 space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">Repository URL *</label>
-          <input
-            type="url"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/owner/repo"
-            required
-            disabled={loading}
-            className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
-          />
-        </div>
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">Branch</label>
-            <input
-              type="text"
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              disabled={loading}
-              className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
-            />
-          </div>
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">
-              GitHub Token <span className="text-slate-500">(private repos)</span>
-            </label>
-            <div className="relative">
-              <input
-                type={showToken ? "text" : "password"}
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="ghp_…"
-                disabled={loading}
-                className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 pr-10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken((v) => !v)}
-                className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300"
-              >
-                {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </div>
+        {/* Mode switcher */}
+        <div className="flex gap-2 p-1 bg-surface2 rounded-lg w-fit">
+          <button type="button" onClick={() => setMode("github")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              mode === "github" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}>
+            <Github size={14} /> GitHub URL
+          </button>
+          <button type="button" onClick={() => setMode("local")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              mode === "local" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}>
+            <FolderOpen size={14} /> Local Path
+          </button>
         </div>
 
-        <button
-          type="submit"
-          disabled={loading || !repoUrl.trim()}
-          className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded-lg text-sm font-semibold transition-colors"
-        >
+        {mode === "github" && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Repository URL *</label>
+              <input type="url" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo" required={mode==="github"} disabled={loading}
+                className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+            </div>
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">Branch</label>
+                <input type="text" value={branch} onChange={(e) => setBranch(e.target.value)} disabled={loading}
+                  className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+              </div>
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  GitHub Token <span className="text-slate-500">(private repos)</span>
+                </label>
+                <div className="relative">
+                  <input type={showToken ? "text" : "password"} value={token} onChange={(e) => setToken(e.target.value)}
+                    placeholder="ghp_…" disabled={loading}
+                    className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 pr-10 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+                  <button type="button" onClick={() => setShowToken((v) => !v)}
+                    className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300">
+                    {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {mode === "local" && (
+          <>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Local Path (inside container) *</label>
+              <input type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="/mnt/projects/my-app  or  /app/projects/my-app"
+                required={mode==="local"} disabled={loading}
+                className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+              <p className="text-xs text-slate-500 mt-1">Mount your project folder via docker-compose volume, e.g.: <code className="bg-surface2 px-1 rounded">./my-app:/mnt/projects/my-app</code></p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Display Name <span className="text-slate-500">(optional)</span></label>
+              <input type="text" value={localName} onChange={(e) => setLocalName(e.target.value)}
+                placeholder="my-app" disabled={loading}
+                className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+            </div>
+          </>
+        )}
+
+        <button type="submit"
+          disabled={loading || (mode==="github" ? !repoUrl.trim() : !localPath.trim())}
+          className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded-lg text-sm font-semibold transition-colors">
           <ScanSearch size={16} />
           {loading ? "Scanning…" : "Start Scan"}
         </button>

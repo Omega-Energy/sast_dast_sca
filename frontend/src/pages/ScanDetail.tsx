@@ -4,7 +4,7 @@ import { ArrowLeft, Download, Trash2, ChevronDown, ChevronUp } from "lucide-reac
 import { api, ScanSummary, ScanResults } from "../api";
 import { Badge, StatusBadge } from "../components/Badge";
 
-type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast";
+type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast" | "binary";
 
 function TruncText({ text, max = 120 }: { text: string; max?: number }) {
   const [open, setOpen] = useState(false);
@@ -85,6 +85,7 @@ export default function ScanDetail() {
     { key: "gitleaks",  label: "Gitleaks",  count: scan?.gitleaks_count ?? 0 },
     { key: "yara",      label: "YARA",       count: scan?.yara_count ?? 0 },
     { key: "dast",      label: "DAST (ZAP)", count: scan?.dast_count ?? 0 },
+    { key: "binary",    label: "Binaries",    count: scan?.binary_count ?? 0 },
   ];
 
   const applyFilters = <T extends { file?: string; severity?: string; title?: string; detail?: string; rule?: string; package?: string }>(
@@ -114,6 +115,8 @@ export default function ScanDetail() {
   const yaraFindings = results ? applyFilters([...(results.yara?.findings ?? [])].sort(sortBySeverity)) : [];
   const dastFindings = results ? applyFilters([...(results.dast?.findings ?? [])].sort(sortBySeverity)) : [];
   const dastMeta = results?.dast;
+  const binaryFindings = results ? [...(results.binary?.findings ?? [])].sort(sortBySeverity)
+    .filter((f) => !filter || JSON.stringify(f).toLowerCase().includes(filter.toLowerCase())) : [];
 
   return (
     <div className="p-8 space-y-6">
@@ -377,6 +380,39 @@ export default function ScanDetail() {
                           {f.strings[0].match}
                         </code>
                       )}
+                    </td>
+                  </tr>
+                ))}
+              </FindingsTable>
+            )}
+
+            {tab === "binary" && (
+              <FindingsTable
+                empty={binaryFindings.length === 0}
+                headers={["Severity", "File", "Size", "Entropy", "Issues"]}
+              >
+                {binaryFindings.map((f, i) => (
+                  <tr key={i} className="border-b border-border/50 hover:bg-surface2/50 align-top">
+                    <td className="px-4 py-3 whitespace-nowrap"><Badge severity={f.severity} /></td>
+                    <td className="px-4 py-3 font-mono text-xs text-orange-400 max-w-xs break-all">{f.file}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">{f.size_kb} KB</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className={`font-mono text-xs px-2 py-0.5 rounded border ${
+                        f.entropy > 7.5 ? "text-red-300 bg-red-950/40 border-red-800/40"
+                        : f.entropy > 7.0 ? "text-orange-300 bg-orange-950/40 border-orange-800/40"
+                        : "text-slate-400 bg-surface2 border-border"
+                      }`}>{f.entropy}/8.0</span>
+                    </td>
+                    <td className="px-4 py-3 text-xs space-y-1">
+                      {f.issues.map((issue, j) => (
+                        <div key={j} className="flex items-start gap-2">
+                          <Badge severity={issue.severity} />
+                          <span className="text-slate-300">{issue.detail}</span>
+                          {issue.match && (
+                            <code className="ml-1 text-xs bg-surface2 px-1.5 py-0.5 rounded text-yellow-400 break-all">{issue.match}</code>
+                          )}
+                        </div>
+                      ))}
                     </td>
                   </tr>
                 ))}
