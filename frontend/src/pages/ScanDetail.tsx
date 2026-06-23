@@ -36,6 +36,7 @@ export default function ScanDetail() {
   const [tab, setTab] = useState<Tab>("bandit");
   const [filter, setFilter] = useState("");
   const [sevFilter, setSevFilter] = useState("ALL");
+  const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -61,6 +62,22 @@ export default function ScanDetail() {
     }, 3000);
     return () => clearInterval(iv);
   }, [id]);
+
+  // Live log via WebSocket while scan is running
+  useEffect(() => {
+    if (!id || !scan) return;
+    if (scan.status !== "running") return;
+    const wsUrl = `ws://${window.location.host}/api/scans/${id}/ws`;
+    const ws = new WebSocket(wsUrl);
+    ws.onmessage = (e) => {
+      setLogs((prev) => {
+        const next = [...prev, e.data];
+        return next.slice(-100); // keep last 100 lines
+      });
+    };
+    ws.onerror = () => ws.close();
+    return () => ws.close();
+  }, [id, scan?.status]);
 
   const handleDelete = async () => {
     if (!confirm("Delete this scan?")) return;
@@ -181,9 +198,32 @@ export default function ScanDetail() {
       )}
 
       {scan.status !== "done" && scan.status !== "failed" && (
-        <div className="text-center py-16 text-slate-400">
-          <div className="animate-spin text-3xl mb-4">⏳</div>
-          <div>Scan in progress…</div>
+        <div className="bg-surface border border-border rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-surface2">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+            <span className="text-xs text-slate-400 font-mono">Live log</span>
+          </div>
+          <div className="font-mono text-xs text-slate-300 p-4 space-y-0.5 min-h-[160px] max-h-[400px] overflow-y-auto bg-[#0d1117]">
+            {logs.length === 0 ? (
+              <div className="text-slate-600 italic">Waiting for output…</div>
+            ) : (
+              logs.map((line, i) => {
+                const isError = /error|fail|exception/i.test(line);
+                const isWarn  = /warn|skip/i.test(line);
+                const isOk    = /done|complete|found|✓/i.test(line);
+                return (
+                  <div key={i} className={
+                    isError ? "text-red-400" :
+                    isWarn  ? "text-yellow-400" :
+                    isOk    ? "text-green-400" :
+                    "text-slate-300"
+                  }>
+                    <span className="text-slate-600 select-none mr-2">&gt;</span>{line}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
 

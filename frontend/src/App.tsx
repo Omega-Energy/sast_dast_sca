@@ -19,7 +19,7 @@ export default function App() {
       {/* Sidebar */}
       <aside className="w-56 shrink-0 bg-surface border-r border-border flex flex-col">
         <div className="px-5 py-5 border-b border-border">
-          <span className="text-xl font-bold tracking-tight">🔐 SAST</span>
+          <span className="text-xl font-bold tracking-tight">🔐 AppSec</span>
           <span className="ml-1 text-slate-400 text-sm">Pipeline</span>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
