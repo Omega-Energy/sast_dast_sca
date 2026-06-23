@@ -1,24 +1,25 @@
 """
-DAST module: build target app from repo Dockerfile, run OWASP ZAP active scan.
-Requires Docker socket mounted at /var/run/docker.sock.
+DAST module: launch target app as subprocess, run lightweight Python HTTP scanner.
+No Docker, no ZAP — fast and non-blocking.
 """
+import os
+import re
+import sys
 import time
-import uuid
+import signal
 import socket
+import subprocess
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urljoin, urlparse, quote
 
-try:
-    import docker
-    from docker.errors import BuildError, APIError, NotFound
-    DOCKER_AVAILABLE = True
-except ImportError:
-    DOCKER_AVAILABLE = False
+import requests
+from requests.exceptions import RequestException
 
-ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
-ZAP_TIMEOUT = 300        # seconds to wait for ZAP scan
-APP_STARTUP_WAIT = 15    # seconds to wait for app to be ready
-APP_PORT = 8080          # default port to try
+APP_STARTUP_WAIT = 8     # seconds to wait for app to be ready
+APP_PORT_RANGE   = (18000, 18999)  # port range for target apps
+SCAN_TIMEOUT     = 5     # per-request timeout seconds
+MAX_CRAWL_DEPTH  = 20    # max URLs to test
 
 
 def _free_port() -> int:
@@ -30,296 +31,336 @@ def _free_port() -> int:
 
 def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
     """
-    1. Look for Dockerfile in repo_dir.
-    2. Build the image.
-    3. Run container, expose a port.
-    4. Pull ZAP image (if not cached) and run baseline + active scan.
-    5. Return structured findings list.
+    1. Detect project type & entrypoint.
+    2. Launch app as subprocess on a free port.
+    3. Wait for it to respond.
+    4. Run lightweight HTTP security checks.
+    5. Kill app, return findings.
     """
-    if not DOCKER_AVAILABLE:
-        return {"findings": [], "skipped": True, "reason": "docker SDK not available"}
+    project_type = _detect_project_type(repo_dir)
+    if not project_type:
+        return {"findings": [], "skipped": True, "reason": "Could not detect project type — DAST skipped"}
 
-    dockerfile_path = _find_dockerfile(repo_dir)
-    _auto_generated = False
+    launch_cmd = _build_launch_command(repo_dir, project_type)
+    if not launch_cmd:
+        return {"findings": [], "skipped": True, "reason": f"No launch command for project type '{project_type}' — DAST skipped"}
 
-    if dockerfile_path is None:
-        project_type = _detect_project_type(repo_dir)
-        if project_type:
-            log(f"DAST: no Dockerfile found, detected project type '{project_type}' — auto-generating Dockerfile…")
-            dockerfile_path = _generate_dockerfile(repo_dir, project_type)
-            _auto_generated = True
-        if dockerfile_path is None:
-            return {
-                "findings": [],
-                "skipped": True,
-                "reason": "No Dockerfile found and project type could not be detected — DAST skipped",
-            }
+    port = _free_port()
+    target_url = f"http://127.0.0.1:{port}"
+    log(f"DAST: detected {project_type} project, launching on port {port}…")
+
+    # Install Python deps if requirements.txt present and no valid venv
+    if project_type == "python":
+        req_file = repo_dir / "requirements.txt"
+        venv_ok = any([
+            (repo_dir / "venv" / "bin" / "python").exists(),
+            (repo_dir / ".venv" / "bin" / "python").exists(),
+        ])
+        if req_file.exists() and not venv_ok:
+            log("DAST: installing requirements.txt…")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file),
+                     "--break-system-packages"],
+                    timeout=120, capture_output=True
+                )
+            except Exception as pip_err:
+                log(f"DAST: pip install warning: {pip_err}")
+
+    env = {**os.environ, "PORT": str(port), "HOST": "127.0.0.1", "FLASK_ENV": "production"}
+    proc = None
 
     try:
-        client = docker.from_env()
-    except Exception as e:
-        return {"findings": [], "skipped": True, "reason": f"Docker socket error: {e}"}
-
-    run_id = uuid.uuid4().hex[:8]
-    app_image_tag = f"sast-dast-target-{run_id}"
-    app_container = None
-    network = None
-
-    try:
-        # ── Build target image ────────────────────────────────────────────────
-        log("DAST: building target Docker image…")
-        build_context = str(dockerfile_path.parent)
-        df_relative = dockerfile_path.relative_to(dockerfile_path.parent)
-
-        try:
-            image, build_logs = client.images.build(
-                path=build_context,
-                dockerfile=str(df_relative),
-                tag=app_image_tag,
-                rm=True,
-                timeout=180,
-            )
-        except BuildError as e:
-            return {"findings": [], "skipped": True, "reason": f"Docker build failed: {e}"}
-
-        log("DAST: target image built.")
-
-        # ── Run target container ──────────────────────────────────────────────
-        host_port = _free_port()
-        network_name = f"dast-net-{run_id}"
-        network = client.networks.create(network_name, driver="bridge")
-
-        app_container = client.containers.run(
-            app_image_tag,
-            detach=True,
-            network=network_name,
-            name=f"dast-target-{run_id}",
-            environment={"PORT": str(APP_PORT)},
-            ports={f"{APP_PORT}/tcp": host_port},
-            remove=False,
-        )
-        log(f"DAST: target container started on host port {host_port}, waiting {APP_STARTUP_WAIT}s…")
-        time.sleep(APP_STARTUP_WAIT)
-
-        # Check if container is still running
-        app_container.reload()
-        if app_container.status != "running":
-            logs_out = app_container.logs(tail=20).decode(errors="replace")
-            return {
-                "findings": [],
-                "skipped": True,
-                "reason": f"Target container exited early. Logs:\n{logs_out}",
-            }
-
-        target_url = f"http://host.docker.internal:{host_port}"
-        log(f"DAST: running OWASP ZAP scan against {target_url}…")
-
-        # ── Pull ZAP if needed ────────────────────────────────────────────────
-        try:
-            client.images.get(ZAP_IMAGE)
-        except NotFound:
-            log("DAST: pulling ZAP image (first time, may take a minute)…")
-            client.images.pull(ZAP_IMAGE)
-
-        # ── Run ZAP baseline + active scan ────────────────────────────────────
-        zap_output = client.containers.run(
-            ZAP_IMAGE,
-            command=[
-                "zap-baseline.py",
-                "-t", target_url,
-                "-J", "/zap/wrk/report.json",
-                "-I",   # don't fail on warnings
-                "-a",   # include ajax spider
-                "-d",   # debug
-            ],
-            volumes={f"/tmp/zap-{run_id}": {"bind": "/zap/wrk", "mode": "rw"}},
-            remove=True,
-            extra_hosts={"host.docker.internal": "host-gateway"},
+        proc = subprocess.Popen(
+            launch_cmd,
+            cwd=str(repo_dir),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
-        log("DAST: ZAP scan complete, parsing results…")
+        # Wait for app to respond
+        log(f"DAST: waiting up to {APP_STARTUP_WAIT}s for app to start…")
+        ready = _wait_for_port(port, timeout=APP_STARTUP_WAIT)
+        if not ready:
+            return {"findings": [], "skipped": True, "reason": "App did not start in time — DAST skipped"}
 
-        # ── Parse ZAP JSON report ─────────────────────────────────────────────
-        report_path = Path(f"/tmp/zap-{run_id}/report.json")
-        findings = _parse_zap_report(report_path)
+        log("DAST: app is up, running HTTP security checks…")
+        findings = _run_http_checks(target_url, log)
         log(f"DAST: {len(findings)} findings.")
-
         return {"findings": findings, "skipped": False, "target_url": target_url}
 
     except Exception as e:
-        return {"findings": [], "skipped": True, "reason": str(e)}
+        return {"findings": [], "skipped": True, "reason": f"DAST error: {e}"}
 
     finally:
-        # Cleanup
-        if app_container:
+        if proc and proc.poll() is None:
             try:
-                app_container.stop(timeout=5)
-                app_container.remove(force=True)
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except Exception:
-                pass
-        if network:
-            try:
-                network.remove()
-            except Exception:
-                pass
-        try:
-            client.images.remove(app_image_tag, force=True)
-        except Exception:
-            pass
-        import shutil
-        shutil.rmtree(f"/tmp/zap-{run_id}", ignore_errors=True)
-        if _auto_generated and dockerfile_path and dockerfile_path.exists():
-            try:
-                dockerfile_path.unlink()
-            except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
 
-def _find_dockerfile(repo_dir: Path) -> Path | None:
-    """Search for Dockerfile in root or common subdirectories."""
-    candidates = [
-        repo_dir / "Dockerfile",
-        repo_dir / "docker" / "Dockerfile",
-        repo_dir / "app" / "Dockerfile",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    # Recursive search limited to depth 3
-    for p in repo_dir.rglob("Dockerfile"):
-        parts = p.relative_to(repo_dir).parts
-        if len(parts) <= 3:
-            return p
-    return None
-
-
-# ── Project type detection & auto-Dockerfile ──────────────────────────────────
+# ── Project detection & launch ────────────────────────────────────────────────
 
 def _detect_project_type(repo_dir: Path) -> str | None:
-    """Detect project type from file signatures."""
     checks = [
-        ("python",  ["requirements.txt", "setup.py", "pyproject.toml", "app.py", "main.py", "manage.py"]),
-        ("node",    ["package.json"]),
-        ("java",    ["pom.xml", "build.gradle", "build.gradle.kts"]),
-        ("go",      ["go.mod"]),
-        ("php",     ["composer.json", "index.php"]),
-        ("ruby",    ["Gemfile"]),
+        ("python", ["requirements.txt", "setup.py", "pyproject.toml", "app.py", "main.py", "manage.py"]),
+        ("node",   ["package.json"]),
+        ("go",     ["go.mod"]),
+        ("ruby",   ["Gemfile", "config.ru"]),
     ]
-    for project_type, signatures in checks:
-        if any((repo_dir / sig).exists() for sig in signatures):
-            return project_type
+    for ptype, sigs in checks:
+        if any((repo_dir / s).exists() for s in sigs):
+            return ptype
     return None
 
 
-def _detect_python_entrypoint(repo_dir: Path) -> str:
-    """Try to find the main Python web app entrypoint."""
-    # Priority order
-    candidates = ["app.py", "main.py", "run.py", "server.py", "manage.py", "wsgi.py", "asgi.py"]
+def _detect_python_entrypoint(repo_dir: Path) -> str | None:
+    candidates = ["app.py", "main.py", "run.py", "server.py", "wsgi.py", "asgi.py"]
     for c in candidates:
-        if (repo_dir / c).exists():
-            return c
-    # Look for any .py with Flask/FastAPI/Django import
+        p = repo_dir / c
+        if p.exists():
+            try:
+                content = p.read_text(errors="replace")
+                if any(kw in content for kw in ["Flask(", "FastAPI(", "Starlette(", "app.run", "uvicorn", "django"]):
+                    return c
+            except Exception:
+                pass
+    # fallback: any .py with web framework
     for py in repo_dir.glob("*.py"):
         try:
             content = py.read_text(errors="replace")
-            if any(kw in content for kw in ["Flask(", "FastAPI(", "Starlette(", "django"]):
+            if any(kw in content for kw in ["Flask(", "FastAPI(", "Starlette("]):
                 return py.name
         except Exception:
             continue
-    return "app.py"  # fallback
+    return None
 
 
-_DOCKERFILE_TEMPLATES = {
-    "python": """\
-FROM python:3.11-slim
-WORKDIR /app
-COPY . .
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
-EXPOSE 8080
-ENV PORT=8080 HOST=0.0.0.0
-CMD ["python", "{entrypoint}"]
-""",
-    "node": """\
-FROM node:20-slim
-WORKDIR /app
-COPY . .
-RUN npm install --production 2>/dev/null || true
-EXPOSE 8080
-ENV PORT=8080
-CMD ["node", "server.js"]
-""",
-    "java": """\
-FROM eclipse-temurin:17-jre-alpine
-WORKDIR /app
-COPY . .
-EXPOSE 8080
-CMD ["java", "-jar", "app.jar"]
-""",
-    "go": """\
-FROM golang:1.21-alpine AS build
-WORKDIR /app
-COPY . .
-RUN go build -o app . 2>/dev/null || true
-FROM alpine:latest
-WORKDIR /app
-COPY --from=build /app/app .
-EXPOSE 8080
-CMD ["./app"]
-""",
-    "php": """\
-FROM php:8.2-apache
-COPY . /var/www/html/
-RUN sed -i 's/80/8080/g' /etc/apache2/ports.conf /etc/apache2/sites-available/*.conf 2>/dev/null || true
-EXPOSE 8080
-""",
-}
-
-
-def _generate_dockerfile(repo_dir: Path, project_type: str) -> Path | None:
-    """Write a temporary auto-generated Dockerfile into repo_dir."""
-    template = _DOCKERFILE_TEMPLATES.get(project_type)
-    if not template:
-        return None
+def _build_launch_command(repo_dir: Path, project_type: str) -> list | None:
     if project_type == "python":
+        # Check both Linux and Windows venv layouts (project may come from Windows host)
+        venv_candidates = [
+            repo_dir / "venv" / "bin" / "python",
+            repo_dir / ".venv" / "bin" / "python",
+            repo_dir / "venv" / "Scripts" / "python.exe",
+            repo_dir / ".venv" / "Scripts" / "python.exe",
+        ]
+        venv_python = next((p for p in venv_candidates if p.exists()), None)
+        python_bin = str(venv_python) if venv_python else sys.executable
         entrypoint = _detect_python_entrypoint(repo_dir)
-        template = template.format(entrypoint=entrypoint)
-    dockerfile = repo_dir / "_auto_Dockerfile"
-    dockerfile.write_text(template)
-    return dockerfile
+        if entrypoint:
+            return [python_bin, entrypoint]
+        # Try uvicorn if FastAPI
+        return [python_bin, "-c",
+                "import sys; sys.path.insert(0,''); "
+                "exec(open(next(f for f in ['app.py','main.py'] if __import__('os').path.exists(f))).read())"]
+    if project_type == "node":
+        pkg = repo_dir / "package.json"
+        try:
+            import json
+            data = json.loads(pkg.read_text())
+            start = data.get("scripts", {}).get("start", "")
+            if start:
+                return ["sh", "-c", start]
+        except Exception:
+            pass
+        for entry in ["server.js", "app.js", "index.js", "src/index.js"]:
+            if (repo_dir / entry).exists():
+                return ["node", entry]
+    if project_type == "ruby":
+        if (repo_dir / "config.ru").exists():
+            return ["ruby", "-e", "require 'rack'; Rack::Server.start(config: 'config.ru')"]
+    return None
 
 
-def _parse_zap_report(report_path: Path) -> list:
-    """Parse ZAP JSON report into a flat findings list."""
-    import json
+def _wait_for_port(port: int, timeout: int) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.5)
+    return False
 
-    if not report_path.exists():
-        return []
 
-    try:
-        data = json.loads(report_path.read_text())
-    except Exception:
-        return []
+# ── HTTP Security Checks ──────────────────────────────────────────────────────
 
+def _run_http_checks(base_url: str, log: Callable[[str], None]) -> list:
     findings = []
-    risk_map = {"3": "HIGH", "2": "MEDIUM", "1": "LOW", "0": "INFO"}
+    session = requests.Session()
+    session.verify = False
+    session.max_redirects = 3
 
-    for site in data.get("site", []):
-        for alert in site.get("alerts", []):
-            risk = risk_map.get(str(alert.get("riskcode", "1")), "LOW")
-            instances = alert.get("instances", [])
-            urls = [i.get("uri", "") for i in instances[:5]]
-            findings.append({
-                "name": alert.get("alert", ""),
-                "severity": risk,
-                "confidence": alert.get("confidence", ""),
-                "description": alert.get("desc", "").replace("<p>", "").replace("</p>", " ").strip(),
-                "solution": alert.get("solution", "").replace("<p>", "").replace("</p>", " ").strip(),
-                "reference": alert.get("reference", ""),
-                "cwe": alert.get("cweid", ""),
-                "wasc": alert.get("wascid", ""),
-                "urls": urls,
-                "count": alert.get("count", len(instances)),
-            })
+    # 1. Fetch root to get baseline headers & links
+    try:
+        root_resp = session.get(base_url, timeout=SCAN_TIMEOUT, allow_redirects=True)
+    except RequestException as e:
+        return [{"name": "App unreachable", "severity": "INFO",
+                 "description": str(e), "url": base_url}]
 
-    findings.sort(key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}.get(x["severity"], 4))
+    # ── Security headers check ────────────────────────────────────────────────
+    log("DAST: checking security headers…")
+    findings += _check_security_headers(root_resp)
+
+    # ── Collect URLs to test ──────────────────────────────────────────────────
+    urls = _extract_urls(root_resp, base_url)
+    log(f"DAST: found {len(urls)} endpoints to probe…")
+
+    # ── Check each endpoint ───────────────────────────────────────────────────
+    tested = set()
+    for url in list(urls)[:MAX_CRAWL_DEPTH]:
+        if url in tested:
+            continue
+        tested.add(url)
+        try:
+            findings += _check_endpoint(session, url, base_url, log)
+        except Exception:
+            pass
+
+    findings.sort(key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}.get(x.get("severity", "INFO"), 4))
+    return findings
+
+
+def _check_security_headers(resp: requests.Response) -> list:
+    findings = []
+    headers = {k.lower(): v for k, v in resp.headers.items()}
+    url = resp.url
+
+    required = {
+        "x-frame-options":           ("MEDIUM", "Missing X-Frame-Options header — clickjacking risk"),
+        "x-content-type-options":    ("LOW",    "Missing X-Content-Type-Options header"),
+        "strict-transport-security": ("MEDIUM", "Missing HSTS header"),
+        "content-security-policy":   ("MEDIUM", "Missing Content-Security-Policy header"),
+        "referrer-policy":           ("LOW",    "Missing Referrer-Policy header"),
+        "permissions-policy":        ("LOW",    "Missing Permissions-Policy header"),
+    }
+    for header, (sev, msg) in required.items():
+        if header not in headers:
+            findings.append({"name": f"Missing {header}", "severity": sev,
+                             "description": msg, "url": url})
+
+    # Server header leaks version
+    server = headers.get("server", "")
+    if re.search(r"[\d.]{3,}", server):
+        findings.append({"name": "Server version disclosure", "severity": "LOW",
+                         "description": f"Server header exposes version: {server}", "url": url})
+
+    # X-Powered-By leaks tech
+    powered = headers.get("x-powered-by", "")
+    if powered:
+        findings.append({"name": "X-Powered-By disclosure", "severity": "LOW",
+                         "description": f"X-Powered-By header reveals tech stack: {powered}", "url": url})
+
+    # Cookies without Secure/HttpOnly
+    for cookie in resp.cookies:
+        issues = []
+        if not cookie.secure:
+            issues.append("missing Secure flag")
+        if not cookie.has_nonstandard_attr("HttpOnly"):
+            issues.append("missing HttpOnly flag")
+        if issues:
+            findings.append({"name": "Insecure cookie", "severity": "MEDIUM",
+                             "description": f"Cookie '{cookie.name}': {', '.join(issues)}", "url": url})
+
+    return findings
+
+
+def _extract_urls(resp: requests.Response, base_url: str) -> list:
+    urls = [base_url]
+    try:
+        text = resp.text
+        # href links
+        for href in re.findall(r'href=["\']([^"\'#?]+)', text):
+            full = urljoin(base_url, href)
+            if full.startswith(base_url):
+                urls.append(full)
+        # form actions
+        for action in re.findall(r'action=["\']([^"\']+)', text):
+            full = urljoin(base_url, action)
+            if full.startswith(base_url):
+                urls.append(full)
+    except Exception:
+        pass
+    return list(dict.fromkeys(urls))
+
+
+def _check_endpoint(session: requests.Session, url: str, base_url: str,
+                    log: Callable[[str], None]) -> list:
+    findings = []
+
+    # ── SQL injection probes ──────────────────────────────────────────────────
+    sql_payloads = ["'", "\" OR \"1\"=\"1", "' OR '1'='1", "1; DROP TABLE users--"]
+    sql_errors = ["sql syntax", "mysql_fetch", "ORA-", "pg_query", "sqlite3", "syntax error",
+                  "unclosed quotation", "unterminated string"]
+    for payload in sql_payloads[:2]:
+        probe_url = url + ("&" if "?" in url else "?") + f"id={quote(payload)}"
+        try:
+            r = session.get(probe_url, timeout=SCAN_TIMEOUT)
+            body_lower = r.text.lower()
+            for err in sql_errors:
+                if err in body_lower:
+                    findings.append({"name": "Possible SQL Injection", "severity": "HIGH",
+                                     "description": f"SQL error pattern '{err}' in response to payload: {payload}",
+                                     "url": probe_url})
+                    break
+        except RequestException:
+            pass
+
+    # ── XSS probe ─────────────────────────────────────────────────────────────
+    xss_payload = "<script>alert(1)</script>"
+    probe_url = url + ("&" if "?" in url else "?") + f"q={quote(xss_payload)}"
+    try:
+        r = session.get(probe_url, timeout=SCAN_TIMEOUT)
+        if xss_payload in r.text:
+            findings.append({"name": "Reflected XSS", "severity": "HIGH",
+                             "description": "XSS payload reflected unescaped in response",
+                             "url": probe_url})
+    except RequestException:
+        pass
+
+    # ── Open redirect probe ───────────────────────────────────────────────────
+    redirect_payload = "https://evil.example.com"
+    for param in ["redirect", "next", "url", "return", "goto"]:
+        probe_url = url + ("&" if "?" in url else "?") + f"{param}={quote(redirect_payload)}"
+        try:
+            r = session.get(probe_url, timeout=SCAN_TIMEOUT, allow_redirects=False)
+            loc = r.headers.get("location", "")
+            if "evil.example.com" in loc:
+                findings.append({"name": "Open Redirect", "severity": "MEDIUM",
+                                 "description": f"Parameter '{param}' causes redirect to external URL",
+                                 "url": probe_url})
+        except RequestException:
+            pass
+
+    # ── Directory traversal probe ─────────────────────────────────────────────
+    traversal = "../../../../etc/passwd"
+    probe_url = url + ("&" if "?" in url else "?") + f"file={quote(traversal)}"
+    try:
+        r = session.get(probe_url, timeout=SCAN_TIMEOUT)
+        if "root:x:" in r.text or "root:0:0" in r.text:
+            findings.append({"name": "Path Traversal", "severity": "HIGH",
+                             "description": "App may be vulnerable to directory traversal (/etc/passwd content detected)",
+                             "url": probe_url})
+    except RequestException:
+        pass
+
+    # ── HTTP methods check ────────────────────────────────────────────────────
+    try:
+        r = session.options(url, timeout=SCAN_TIMEOUT)
+        allow = r.headers.get("allow", r.headers.get("Allow", ""))
+        dangerous = [m for m in ["PUT", "DELETE", "TRACE", "CONNECT"] if m in allow]
+        if dangerous:
+            findings.append({"name": "Dangerous HTTP methods enabled", "severity": "MEDIUM",
+                             "description": f"Server allows: {', '.join(dangerous)}",
+                             "url": url})
+    except RequestException:
+        pass
+
     return findings

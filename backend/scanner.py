@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from dast import run_dast, DOCKER_AVAILABLE as DAST_AVAILABLE
+from dast import run_dast
+DAST_AVAILABLE = True
 
 try:
     import yara
