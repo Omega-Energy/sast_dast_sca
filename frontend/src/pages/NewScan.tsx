@@ -24,6 +24,17 @@ export default function NewScan() {
     }
   }, [logs]);
 
+  function toContainerPath(p: string): string {
+    // Convert Windows path like C:\DEV\foo → /mnt/c/DEV/foo
+    const win = p.match(/^([A-Za-z]):[\\\/](.*)/);
+    if (win) {
+      const drive = win[1].toLowerCase();
+      const rest = win[2].replace(/\\/g, "/");
+      return `/mnt/${drive}/${rest}`;
+    }
+    return p;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (mode === "github" && !repoUrl.trim()) return;
@@ -34,7 +45,7 @@ export default function NewScan() {
     try {
       const s = mode === "github"
         ? await api.createScan(repoUrl.trim(), branch.trim() || "main", token.trim())
-        : await api.createLocalScan(localPath.trim(), localName.trim());
+        : await api.createLocalScan(toContainerPath(localPath.trim()), localName.trim());
       setScan(s);
       const ws = api.wsLog(s.id);
       ws.onmessage = (ev) => {

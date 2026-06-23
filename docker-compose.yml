@@ -12,6 +12,7 @@ services:
       - ./backend/data:/app/data
       - ./reports:/app/reports
       - /var/run/docker.sock:/var/run/docker.sock
+      - /c:/mnt/c
     environment:
       - PYTHONUNBUFFERED=1
       - DOCKER_HOST=unix:///var/run/docker.sock
