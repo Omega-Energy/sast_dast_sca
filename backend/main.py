@@ -36,7 +36,10 @@ async def lifespan(app: FastAPI):
         from sqlmodel import SQLModel
         await conn.run_sync(SQLModel.metadata.create_all)
         # Safe migrations: add missing columns if schema changed
-        for col, typedef in [("yara_count", "INTEGER NOT NULL DEFAULT 0")]:
+        for col, typedef in [
+            ("yara_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("dast_count", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
             try:
                 await conn.execute(
                     __import__("sqlalchemy").text(f"ALTER TABLE scan ADD COLUMN {col} {typedef}")
@@ -80,6 +83,7 @@ class ScanSummary(BaseModel):
     pip_audit_count: int
     gitleaks_count: int
     yara_count: int
+    dast_count: int
     total_count: int
     error: Optional[str]
 
@@ -122,6 +126,7 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str):
         p = len(results.get("pip_audit", {}).get("findings", []))
         g = len(results.get("gitleaks", {}).get("findings", []))
         y = len(results.get("yara", {}).get("findings", []))
+        da = len(results.get("dast", {}).get("findings", []))
 
         async with SessionFactory() as session:
             scan = await session.get(Scan, scan_id)
@@ -133,7 +138,8 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str):
             scan.pip_audit_count = p
             scan.gitleaks_count = g
             scan.yara_count = y
-            scan.total_count = b + s + p + g + y
+            scan.dast_count = da
+            scan.total_count = b + s + p + g + y + da
             scan.results_json = json.dumps(results, ensure_ascii=False)
             session.add(scan)
             await session.commit()
@@ -236,6 +242,7 @@ async def get_stats():
         "pip_audit_total": sum(s.pip_audit_count for s in done),
         "gitleaks_total": sum(s.gitleaks_count for s in done),
         "yara_total": sum(s.yara_count for s in done),
+        "dast_total": sum(s.dast_count for s in done),
         "history": [
             {
                 "id": s.id,
@@ -247,6 +254,7 @@ async def get_stats():
                 "pip_audit_count": s.pip_audit_count,
                 "gitleaks_count": s.gitleaks_count,
                 "yara_count": s.yara_count,
+                "dast_count": s.dast_count,
             }
             for s in sorted(done, key=lambda x: x.id)[-20:]
         ],
@@ -315,6 +323,7 @@ def _to_summary(scan: Scan) -> ScanSummary:
         pip_audit_count=scan.pip_audit_count,
         gitleaks_count=scan.gitleaks_count,
         yara_count=scan.yara_count,
+        dast_count=scan.dast_count,
         total_count=scan.total_count,
         error=scan.error,
     )

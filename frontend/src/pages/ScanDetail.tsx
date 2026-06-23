@@ -4,7 +4,7 @@ import { ArrowLeft, Download, Trash2, ChevronDown, ChevronUp } from "lucide-reac
 import { api, ScanSummary, ScanResults } from "../api";
 import { Badge, StatusBadge } from "../components/Badge";
 
-type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara";
+type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast";
 
 function TruncText({ text, max = 120 }: { text: string; max?: number }) {
   const [open, setOpen] = useState(false);
@@ -84,6 +84,7 @@ export default function ScanDetail() {
     { key: "pip_audit", label: "pip-audit", count: scan?.pip_audit_count ?? 0 },
     { key: "gitleaks",  label: "Gitleaks",  count: scan?.gitleaks_count ?? 0 },
     { key: "yara",      label: "YARA",       count: scan?.yara_count ?? 0 },
+    { key: "dast",      label: "DAST (ZAP)", count: scan?.dast_count ?? 0 },
   ];
 
   const applyFilters = <T extends { file?: string; severity?: string; title?: string; detail?: string; rule?: string; package?: string }>(
@@ -111,6 +112,8 @@ export default function ScanDetail() {
     !filter || JSON.stringify(f).toLowerCase().includes(filter.toLowerCase())
   ) : [];
   const yaraFindings = results ? applyFilters([...(results.yara?.findings ?? [])].sort(sortBySeverity)) : [];
+  const dastFindings = results ? applyFilters([...(results.dast?.findings ?? [])].sort(sortBySeverity)) : [];
+  const dastMeta = results?.dast;
 
   return (
     <div className="p-8 space-y-6">
@@ -308,6 +311,46 @@ export default function ScanDetail() {
                   </tr>
                 ))}
               </FindingsTable>
+            )}
+
+            {tab === "dast" && (
+              <div>
+                {dastMeta?.skipped && (
+                  <div className="px-6 py-4 text-sm text-amber-400 bg-amber-950/30 border border-amber-800/30 rounded-lg mx-4 my-3">
+                    <span className="font-semibold">DAST skipped:</span> {dastMeta.reason}
+                  </div>
+                )}
+                {dastMeta?.target_url && (
+                  <div className="px-6 py-2 text-xs text-slate-500">
+                    Target: <span className="font-mono text-indigo-400">{dastMeta.target_url}</span>
+                  </div>
+                )}
+                <FindingsTable
+                  empty={dastFindings.length === 0}
+                  headers={["Severity", "Alert", "CWE", "Count", "Description", "Solution"]}
+                >
+                  {dastFindings.map((f, i) => (
+                    <tr key={i} className="border-b border-border/50 hover:bg-surface2/50 align-top">
+                      <td className="px-4 py-3 whitespace-nowrap"><Badge severity={f.severity} /></td>
+                      <td className="px-4 py-3 text-sm font-semibold text-slate-200 whitespace-nowrap">{f.name}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {f.cwe ? (
+                          <span className="font-mono text-xs text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">
+                            CWE-{f.cwe}
+                          </span>
+                        ) : <span className="text-slate-600">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-400 text-center">{f.count}</td>
+                      <td className="px-4 py-3 text-xs text-slate-400 max-w-sm">
+                        <TruncText text={f.description} max={150} />
+                      </td>
+                      <td className="px-4 py-3 text-xs text-green-400 max-w-xs">
+                        <TruncText text={f.solution} max={120} />
+                      </td>
+                    </tr>
+                  ))}
+                </FindingsTable>
+              </div>
             )}
 
             {tab === "yara" && (

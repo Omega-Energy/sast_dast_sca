@@ -20,6 +20,7 @@ class Scan(SQLModel, table=True):
     pip_audit_count: int = 0
     gitleaks_count: int = 0
     yara_count: int = 0
+    dast_count: int = 0
     total_count: int = 0
 
     report_html: Optional[str] = None

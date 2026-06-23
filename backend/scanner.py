@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from dast import run_dast, DOCKER_AVAILABLE as DAST_AVAILABLE
+
 try:
     import yara
     YARA_AVAILABLE = True
@@ -182,6 +184,25 @@ async def stream_scan(
         await log(f"YARA: {len(results['yara']['findings'])} matches.")
     else:
         results["yara"] = {"findings": [], "error": "yara-python not available"}
+
+    # DAST
+    if DAST_AVAILABLE:
+        await log("Running DAST (OWASP ZAP)…")
+        dast_log_lines: list[str] = []
+
+        def _log_collect(msg: str):
+            dast_log_lines.append(msg)
+
+        results["dast"] = await asyncio.to_thread(run_dast, repo_dir, _log_collect)
+        for line in dast_log_lines:
+            await log(line)
+        skipped = results["dast"].get("skipped", False)
+        if skipped:
+            await log(f"DAST: skipped — {results['dast'].get('reason', '')}")
+        else:
+            await log(f"DAST: {len(results['dast'].get('findings', []))} findings.")
+    else:
+        results["dast"] = {"findings": [], "skipped": True, "reason": "docker SDK not available"}
 
     # Cleanup
     shutil.rmtree(repo_dir, ignore_errors=True)
