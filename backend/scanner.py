@@ -118,7 +118,12 @@ async def stream_scan(
     r = await asyncio.to_thread(
         _run,
         ["semgrep", "--config", "p/python", "--config", "p/secrets",
-         "--json", "--no-git-ignore", "--quiet", str(repo_dir)]
+         "--json", "--no-git-ignore", "--quiet",
+         "--exclude", "venv", "--exclude", ".venv",
+         "--exclude", "node_modules", "--exclude", "*.min.js",
+         "--exclude", "dist", "--exclude", "build", "--exclude", ".git",
+         "--timeout", "60",
+         str(repo_dir)]
     )
     try:
         data = json.loads(r.stdout)

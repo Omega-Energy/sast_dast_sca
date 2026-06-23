@@ -47,6 +47,16 @@ async def lifespan(app: FastAPI):
                 )
             except Exception:
                 pass  # column already exists
+    # Mark stale 'running' scans as failed (left over from previous crash/restart)
+    async with AsyncSession(engine) as session:
+        import sqlalchemy
+        await session.execute(
+            sqlalchemy.text(
+                "UPDATE scan SET status='failed', finished_at=datetime('now') "
+                "WHERE status='running'"
+            )
+        )
+        await session.commit()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     Path("./data").mkdir(parents=True, exist_ok=True)
     yield
