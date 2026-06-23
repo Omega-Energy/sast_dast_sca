@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Security Report — {{ repo_name }}</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3250;
+    --text: #e2e8f0;
+    --muted: #8892aa;
+    --red: #f87171;
+    --orange: #fb923c;
+    --yellow: #facc15;
+    --green: #4ade80;
+    --blue: #60a5fa;
+    --purple: #c084fc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; line-height: 1.6; }
+  a { color: var(--blue); }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 24px 40px; }
+  header h1 { font-size: 22px; font-weight: 700; }
+  header .meta { color: var(--muted); margin-top: 6px; font-size: 13px; }
+  main { padding: 32px 40px; max-width: 1300px; }
+
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 40px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+  .card .value { font-size: 36px; font-weight: 700; }
+  .card.danger .value { color: var(--red); }
+  .card.warning .value { color: var(--orange); }
+  .card.info .value { color: var(--blue); }
+  .card.ok .value { color: var(--green); }
+
+  section { margin-bottom: 40px; }
+  section h2 { font-size: 16px; font-weight: 600; padding: 10px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  section h2 .count { background: var(--surface2); border-radius: 12px; padding: 2px 10px; font-size: 12px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead tr { background: var(--surface2); }
+  th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-word; }
+  tr:hover td { background: var(--surface2); }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .HIGH, .ERROR   { background: #450a0a; color: var(--red); }
+  .MEDIUM, .WARNING { background: #431407; color: var(--orange); }
+  .LOW            { background: #422006; color: var(--yellow); }
+  .INFO           { background: #0c1a4e; color: var(--blue); }
+
+  .filepath { font-family: 'Cascadia Code', 'Fira Code', monospace; color: var(--purple); }
+  .match    { font-family: monospace; background: var(--surface2); padding: 2px 6px; border-radius: 4px; color: var(--yellow); font-size: 12px; }
+  .empty-msg { color: var(--muted); padding: 16px 0; font-style: italic; }
+  .error-msg { color: var(--red); padding: 8px 12px; background: #450a0a; border-radius: 6px; margin-bottom: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔐 Security Scan Report — <a href="{{ repo_url }}" target="_blank">{{ repo_name }}</a></h1>
+  <div class="meta">Branch: <strong>{{ branch }}</strong> &nbsp;·&nbsp; Generated: {{ generated_at }}</div>
+</header>
+<main>
+
+  <!-- Summary -->
+  <div class="summary-grid">
+    <div class="card {{ 'danger' if summary.total > 0 else 'ok' }}">
+      <div class="label">Total Findings</div>
+      <div class="value">{{ summary.total }}</div>
+    </div>
+    <div class="card {{ 'danger' if summary.bandit > 0 else 'ok' }}">
+      <div class="label">Bandit (SAST)</div>
+      <div class="value">{{ summary.bandit }}</div>
+    </div>
+    <div class="card {{ 'warning' if summary.semgrep > 0 else 'ok' }}">
+      <div class="label">Semgrep (SAST)</div>
+      <div class="value">{{ summary.semgrep }}</div>
+    </div>
+    <div class="card {{ 'danger' if summary.pip_audit > 0 else 'ok' }}">
+      <div class="label">pip-audit (SCA)</div>
+      <div class="value">{{ summary.pip_audit }}</div>
+    </div>
+    <div class="card {{ 'danger' if summary.gitleaks > 0 else 'ok' }}">
+      <div class="label">Gitleaks (Secrets)</div>
+      <div class="value">{{ summary.gitleaks }}</div>
+    </div>
+  </div>
+
+  <!-- Bandit -->
+  <section>
+    <h2>🔍 Bandit — Static Analysis <span class="count">{{ bandit_findings | length }}</span></h2>
+    {% if bandit_errors %}<div class="error-msg">{{ bandit_errors }}</div>{% endif %}
+    {% if bandit_findings %}
+    <table>
+      <thead><tr><th>Severity</th><th>Confidence</th><th>File</th><th>Line</th><th>Rule</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for f in bandit_findings %}
+      <tr>
+        <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+        <td><span class="badge INFO">{{ f.confidence }}</span></td>
+        <td class="filepath">{{ f.file }}</td>
+        <td>{{ f.line }}</td>
+        <td>{{ f.title }}{% if f.cwe %} (CWE-{{ f.cwe }}){% endif %}</td>
+        <td>{{ f.detail }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-msg">No issues found.</p>
+    {% endif %}
+  </section>
+
+  <!-- Semgrep -->
+  <section>
+    <h2>🧠 Semgrep — SAST + Secrets patterns <span class="count">{{ semgrep_findings | length }}</span></h2>
+    {% if semgrep_errors %}<div class="error-msg">{{ semgrep_errors }}</div>{% endif %}
+    {% if semgrep_findings %}
+    <table>
+      <thead><tr><th>Severity</th><th>File</th><th>Line</th><th>Rule</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for f in semgrep_findings %}
+      <tr>
+        <td><span class="badge {{ f.severity }}">{{ f.severity }}</span></td>
+        <td class="filepath">{{ f.file }}</td>
+        <td>{{ f.line }}</td>
+        <td>{{ f.title }}</td>
+        <td>{{ f.detail }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-msg">No issues found.</p>
+    {% endif %}
+  </section>
+
+  <!-- pip-audit -->
+  <section>
+    <h2>📦 pip-audit — Dependency Vulnerabilities <span class="count">{{ pip_findings | length }}</span></h2>
+    {% if pip_errors %}<div class="error-msg">{{ pip_errors }}</div>{% endif %}
+    {% if pip_findings %}
+    <table>
+      <thead><tr><th>Package</th><th>Version</th><th>CVE / ID</th><th>Fix</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for f in pip_findings %}
+      <tr>
+        <td><strong>{{ f.package }}</strong></td>
+        <td>{{ f.version }}</td>
+        <td><span class="badge HIGH">{{ f.vuln_id }}</span></td>
+        <td>{{ f.fix }}</td>
+        <td>{{ f.detail }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-msg">No vulnerable dependencies found.</p>
+    {% endif %}
+  </section>
+
+  <!-- Gitleaks -->
+  <section>
+    <h2>🔑 Gitleaks — Secrets in Repository <span class="count">{{ gitleaks_findings | length }}</span></h2>
+    {% if gitleaks_findings %}
+    <table>
+      <thead><tr><th>File</th><th>Line</th><th>Rule</th><th>Description</th><th>Match (redacted)</th><th>Commit</th></tr></thead>
+      <tbody>
+      {% for f in gitleaks_findings %}
+      <tr>
+        <td class="filepath">{{ f.file }}</td>
+        <td>{{ f.line }}</td>
+        <td><span class="badge HIGH">{{ f.rule }}</span></td>
+        <td>{{ f.description }}</td>
+        <td><span class="match">{{ f.match }}</span></td>
+        <td><code>{{ f.commit }}</code></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-msg">No secrets detected.</p>
+    {% endif %}
+  </section>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-bg text-slate-200 antialiased;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
+
+.badge-HIGH    { @apply bg-red-950 text-red-400 border border-red-800; }
+.badge-MEDIUM  { @apply bg-orange-950 text-orange-400 border border-orange-800; }
+.badge-WARNING { @apply bg-orange-950 text-orange-400 border border-orange-800; }
+.badge-LOW     { @apply bg-yellow-950 text-yellow-400 border border-yellow-800; }
+.badge-INFO    { @apply bg-blue-950 text-blue-400 border border-blue-800; }
+.badge-UNKNOWN { @apply bg-slate-800 text-slate-400 border border-slate-600; }
