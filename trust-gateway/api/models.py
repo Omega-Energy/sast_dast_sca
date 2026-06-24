@@ -46,6 +46,7 @@ class Scan(SQLModel, table=True):
     yara_count: int = 0
     dast_count: int = 0
     binary_count: int = 0
+    clamav_count: int = 0
     total_count: int = 0
 
     report_html: Optional[str] = None

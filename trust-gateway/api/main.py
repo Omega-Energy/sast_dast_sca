@@ -49,13 +49,17 @@ async def lifespan(app: FastAPI):
                 )
             except Exception:
                 pass  # column already exists
-        # Add project_id to scan if missing
-        try:
-            await conn.execute(
-                __import__("sqlalchemy").text("ALTER TABLE scan ADD COLUMN project_id INTEGER")
-            )
-        except Exception:
-            pass
+        # Add project_id and clamav_count to scan if missing
+        for col, typedef in [
+            ("project_id", "INTEGER"),
+            ("clamav_count", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                await conn.execute(
+                    __import__("sqlalchemy").text(f"ALTER TABLE scan ADD COLUMN {col} {typedef}")
+                )
+            except Exception:
+                pass
     # Mark stale 'running' scans as failed (left over from previous crash/restart)
     async with AsyncSession(engine) as session:
         import sqlalchemy
@@ -110,6 +114,7 @@ class ScanSummary(BaseModel):
     yara_count: int
     dast_count: int
     binary_count: int
+    clamav_count: int
     total_count: int
     error: Optional[str]
 
@@ -190,6 +195,7 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
         y = len(results.get("yara", {}).get("findings", []))
         da = len(results.get("dast", {}).get("findings", []))
         bi = len(results.get("binary", {}).get("findings", []))
+        cl = len(results.get("clamav", {}).get("findings", []))
 
         async with SessionFactory() as session:
             scan = await session.get(Scan, scan_id)
@@ -203,7 +209,8 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
             scan.yara_count = y
             scan.dast_count = da
             scan.binary_count = bi
-            scan.total_count = b + s + p + g + y + da + bi
+            scan.clamav_count = cl
+            scan.total_count = b + s + p + g + y + da + bi + cl
             scan.results_json = json.dumps(results, ensure_ascii=False)
             session.add(scan)
             await session.commit()
@@ -335,6 +342,7 @@ async def get_stats():
         "yara_total": sum(s.yara_count for s in done),
         "dast_total": sum(s.dast_count for s in done),
         "binary_total": sum(s.binary_count for s in done),
+        "clamav_total": sum(s.clamav_count for s in done),
         "history": [
             {
                 "id": s.id,
@@ -614,6 +622,7 @@ def _to_summary(scan: Scan) -> ScanSummary:
         yara_count=scan.yara_count,
         dast_count=scan.dast_count,
         binary_count=scan.binary_count,
+        clamav_count=scan.clamav_count,
         total_count=scan.total_count,
         error=scan.error,
     )

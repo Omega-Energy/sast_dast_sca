@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates \
     gcc python3-dev libssl-dev libmagic1 \
     docker.io \
+    clamav clamav-freshclam \
+    && freshclam || true \
     && rm -rf /var/lib/apt/lists/*
 
 # Gitleaks

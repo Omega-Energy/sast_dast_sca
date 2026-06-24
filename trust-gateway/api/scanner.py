@@ -207,6 +207,15 @@ async def stream_scan(
     results["binary"] = await asyncio.to_thread(_run_binary_analysis, repo_dir)
     await log(f"Binary: {len(results['binary']['findings'])} suspicious binaries.")
 
+    # ClamAV
+    await log("Running ClamAV (antivirus)…")
+    results["clamav"] = await asyncio.to_thread(_run_clamav, repo_dir)
+    clamav_count = len(results["clamav"].get("findings", []))
+    if results["clamav"].get("error"):
+        await log(f"ClamAV: skipped — {results['clamav']['error']}")
+    else:
+        await log(f"ClamAV: {clamav_count} threat(s) detected.")
+
     # DAST
     if DAST_AVAILABLE:
         await log("Running DAST (OWASP ZAP)…")
@@ -378,3 +387,54 @@ def _run_binary_analysis(repo_dir: Path) -> dict:
 
     findings.sort(key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(x["severity"], 3))
     return {"findings": findings}
+
+
+# ── ClamAV antivirus scan ─────────────────────────────────────────────────────
+
+def _run_clamav(repo_dir: Path) -> dict:
+    """Run ClamAV clamscan on repository files."""
+    try:
+        r = subprocess.run(
+            ["clamscan", "--recursive", "--infected", "--no-summary",
+             "--max-filesize=50M", "--max-scansize=100M",
+             "--stdout", str(repo_dir)],
+            capture_output=True, text=True, timeout=300
+        )
+    except FileNotFoundError:
+        return {"findings": [], "error": "clamscan not installed"}
+    except subprocess.TimeoutExpired:
+        return {"findings": [], "error": "ClamAV scan timed out (5 min)"}
+
+    findings = []
+    for line in r.stdout.strip().split("\n"):
+        if not line or "OK" in line or "Empty file" in line:
+            continue
+        if "FOUND" in line:
+            parts = line.rsplit(":", 1)
+            if len(parts) == 2:
+                file_path = parts[0].strip()
+                threat = parts[1].replace("FOUND", "").strip()
+                # Make path relative to repo_dir
+                try:
+                    rel_path = str(Path(file_path).relative_to(repo_dir))
+                except ValueError:
+                    rel_path = file_path
+                findings.append({
+                    "file": rel_path,
+                    "threat": threat,
+                    "severity": _classify_clamav_severity(threat),
+                })
+
+    return {"findings": findings}
+
+
+def _classify_clamav_severity(threat_name: str) -> str:
+    """Classify ClamAV threat severity."""
+    t = threat_name.lower()
+    if any(k in t for k in ("trojan", "backdoor", "rootkit", "ransomware", "exploit")):
+        return "CRITICAL"
+    if any(k in t for k in ("virus", "worm", "miner", "keylogger", "stealer")):
+        return "HIGH"
+    if any(k in t for k in ("adware", "pup", "potentially", "heuristic", "suspicious")):
+        return "MEDIUM"
+    return "HIGH"
