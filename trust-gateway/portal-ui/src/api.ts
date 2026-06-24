@@ -42,6 +42,7 @@ export interface SemgrepFinding {
 
 export interface PipFinding {
   package: string; version: string; vuln_id: string; detail: string; fix: string;
+  url: string; aliases: string[];
 }
 
 export interface BinaryFinding {

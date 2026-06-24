@@ -321,7 +321,7 @@ export default function ScanDetail() {
             {tab === "pip_audit" && (
               <FindingsTable
                 empty={pipFindings.length === 0}
-                headers={["Package", "Installed", "CVE / ID", "Fix Version", "Description"]}
+                headers={["Package", "Installed", "CVE / ID", "Fix Version", "Description", "Link"]}
               >
                 {pipFindings.map((f, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-surface2/50 align-top">
@@ -335,8 +335,15 @@ export default function ScanDetail() {
                     <td className="px-4 py-3 whitespace-nowrap">
                       <span className="font-mono text-xs text-green-400">{f.fix}</span>
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-400 max-w-lg">
+                    <td className="px-4 py-3 text-xs text-slate-400 max-w-md">
                       <TruncText text={f.detail} max={200} />
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {f.url ? (
+                        <a href={f.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-400 hover:underline">
+                          Advisory
+                        </a>
+                      ) : <span className="text-slate-600">—</span>}
                     </td>
                   </tr>
                 ))}

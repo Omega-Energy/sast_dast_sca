@@ -154,12 +154,27 @@ async def stream_scan(
         findings = []
         for pkg in data.get("dependencies", []):
             for vuln in pkg.get("vulns", []):
+                desc = vuln.get("description", "")
+                # Extract first meaningful sentence as summary (before PoC/code blocks)
+                summary = _extract_pip_summary(desc)
+                vuln_id = vuln.get("id", "")
+                # Build advisory URL
+                if vuln_id.startswith("GHSA-"):
+                    url = f"https://github.com/advisories/{vuln_id}"
+                elif vuln_id.startswith("CVE-"):
+                    url = f"https://nvd.nist.gov/vuln/detail/{vuln_id}"
+                elif vuln_id.startswith("PYSEC-"):
+                    url = f"https://osv.dev/vulnerability/{vuln_id}"
+                else:
+                    url = ""
                 findings.append({
                     "package": pkg.get("name", ""),
                     "version": pkg.get("version", ""),
-                    "vuln_id": vuln.get("id", ""),
-                    "detail": vuln.get("description", ""),
+                    "vuln_id": vuln_id,
+                    "detail": summary,
                     "fix": ", ".join(vuln.get("fix_versions", [])) or "No fix",
+                    "url": url,
+                    "aliases": vuln.get("aliases", []),
                 })
         results["pip_audit"] = {"findings": findings}
     except Exception as e:
@@ -438,3 +453,36 @@ def _classify_clamav_severity(threat_name: str) -> str:
     if any(k in t for k in ("adware", "pup", "potentially", "heuristic", "suspicious")):
         return "MEDIUM"
     return "HIGH"
+
+
+def _extract_pip_summary(description: str, max_len: int = 300) -> str:
+    """Extract a concise summary from pip-audit advisory description.
+
+    Strips markdown code blocks, PoC sections, and returns the first
+    meaningful paragraph up to max_len characters.
+    """
+    import re
+    if not description:
+        return ""
+    # Remove code blocks
+    text = re.sub(r"```[\s\S]*?```", "", description)
+    # Remove inline code
+    text = re.sub(r"`[^`]+`", "", text)
+    # Remove markdown headers
+    text = re.sub(r"#{1,6}\s+", "", text)
+    # Remove markdown links, keep text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # Remove bold/italic markers
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    # Take text up to PoC/Impact/Details sections if present
+    for marker in ["PoC", "Proof of", "Exploitation", "Impact", "Details"]:
+        idx = text.find(marker)
+        if idx > 30:
+            text = text[:idx].strip()
+            break
+    # Truncate
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0] + "…"
+    return text
