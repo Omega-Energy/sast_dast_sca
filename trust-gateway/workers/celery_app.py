@@ -26,4 +26,4 @@ app.conf.update(
     worker_concurrency=2,
 )
 
-app.autodiscover_tasks(["trust-gateway.workers"])
+app.autodiscover_tasks(["workers"])

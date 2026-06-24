@@ -34,6 +34,8 @@ RUN mkdir -p /app/yara_rules
 
 # Backend source
 COPY trust-gateway/api/*.py .
+COPY trust-gateway/workers/ ./workers/
+COPY trust-gateway/connectors/ ./connectors/
 
 # Built-in YARA rules
 COPY trust-gateway/api/yara_rules/ /app/yara_rules/

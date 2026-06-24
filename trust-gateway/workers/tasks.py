@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from celery_app import app
+from workers.celery_app import app
 
 
 REPO_BASE = Path(os.environ.get("REPO_BASE", "/tmp/repos"))

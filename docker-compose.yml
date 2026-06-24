@@ -62,7 +62,7 @@ services:
       - clamav_data:/var/lib/clamav
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "clamdcheck"]
+      test: ["CMD", "clamdscan", "--version"]
       interval: 60s
       timeout: 10s
       retries: 3
