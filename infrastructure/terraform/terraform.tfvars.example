@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in values
+
+yc_token     = ""
+yc_cloud_id  = ""
+yc_folder_id = ""
+yc_zone      = "ru-central1-a"
+
+instance_cores     = 4
+instance_memory_gb = 8
+disk_size_gb       = 80
+preemptible        = false
+
+ssh_public_key    = "ssh-ed25519 AAAA..."
+allowed_ssh_cidrs = ["YOUR_IP/32"]
+
+dns_zone_id     = ""
+platform_domain = "security.omega-energy.ru"

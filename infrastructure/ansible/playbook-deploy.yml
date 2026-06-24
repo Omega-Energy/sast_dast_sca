@@ -1,0 +1,65 @@
+---
+# Security Platform Deploy Playbook
+# Usage: ansible-playbook -i inventory.yml playbook-deploy.yml
+
+- name: Deploy Security Platform
+  hosts: all
+  become: true
+  become_user: "{{ deploy_user }}"
+  vars:
+    repo_url: https://github.com/Omega-Energy/sast_dast_sca.git
+    branch: master
+
+  tasks:
+    - name: Clone/update repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}/repo"
+        version: "{{ branch }}"
+        force: yes
+
+    - name: Copy .env file
+      template:
+        src: templates/env.j2
+        dest: "{{ app_dir }}/repo/infrastructure/docker-compose/.env"
+        mode: "0600"
+
+    - name: Build Docker images
+      command: docker compose -f docker-compose.prod.yml build
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+
+    - name: Stop existing services
+      command: docker compose -f docker-compose.prod.yml down
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+      ignore_errors: yes
+
+    - name: Start services
+      command: docker compose -f docker-compose.prod.yml up -d
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+
+    - name: Wait for API to be healthy
+      uri:
+        url: "http://localhost:8000/api/stats"
+        status_code: 200
+      register: health_check
+      retries: 10
+      delay: 5
+      until: health_check.status == 200
+
+    - name: Run database migrations
+      command: docker compose -f docker-compose.prod.yml exec -T api python -c "from models import *; print('OK')"
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+
+    - name: Display running services
+      command: docker compose -f docker-compose.prod.yml ps
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+      register: services_status
+
+    - name: Show service status
+      debug:
+        var: services_status.stdout_lines

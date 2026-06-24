@@ -1,0 +1,62 @@
+---
+# Security Platform Backup Playbook
+# Usage: ansible-playbook -i inventory.yml playbook-backup.yml
+
+- name: Backup Security Platform
+  hosts: all
+  become: true
+  become_user: "{{ deploy_user }}"
+  vars:
+    backup_dir: "{{ app_dir }}/backups"
+    retention_days: 30
+
+  tasks:
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Backup PostgreSQL database
+      command: >
+        docker compose -f docker-compose.prod.yml exec -T postgres
+        pg_dump -U security security_platform
+      args:
+        chdir: "{{ app_dir }}/repo/infrastructure/docker-compose"
+      register: pg_dump
+
+    - name: Save database backup
+      copy:
+        content: "{{ pg_dump.stdout }}"
+        dest: "{{ backup_dir }}/db_{{ ansible_date_time.date }}.sql"
+        mode: "0600"
+
+    - name: Compress backup
+      archive:
+        path: "{{ backup_dir }}/db_{{ ansible_date_time.date }}.sql"
+        dest: "{{ backup_dir }}/db_{{ ansible_date_time.date }}.sql.gz"
+        format: gz
+        remove: yes
+
+    - name: Backup reports directory
+      archive:
+        path: "{{ app_dir }}/reports"
+        dest: "{{ backup_dir }}/reports_{{ ansible_date_time.date }}.tar.gz"
+        format: gz
+
+    - name: Remove old backups
+      find:
+        paths: "{{ backup_dir }}"
+        age: "{{ retention_days }}d"
+        recurse: no
+      register: old_backups
+
+    - name: Delete old backup files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+
+    - name: Show backup summary
+      debug:
+        msg: "Backup completed: {{ backup_dir }}/db_{{ ansible_date_time.date }}.sql.gz"
