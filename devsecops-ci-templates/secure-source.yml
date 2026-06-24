@@ -1,0 +1,25 @@
+# Secure Source — SAST + Secrets Detection
+# Включает: Bandit, Semgrep, Gitleaks
+#
+# Использование:
+#   include:
+#     - project: 'security/devsecops-ci-templates'
+#       file: '/secure-source.yml'
+
+stages:
+  - security-scan
+
+sast-scan:
+  stage: security-scan
+  image: ${CI_REGISTRY}/security/scanner-images/source-scanner:latest
+  script:
+    - bandit -r . -f json -o bandit-report.json --exit-zero
+    - semgrep --config p/python --config p/secrets --json -o semgrep-report.json --no-git-ignore .
+    - gitleaks detect --source . --report-format json --report-path gitleaks-report.json --exit-code 0
+  artifacts:
+    paths:
+      - bandit-report.json
+      - semgrep-report.json
+      - gitleaks-report.json
+    expire_in: 30 days
+  allow_failure: false

@@ -1,0 +1,22 @@
+# Binary Artifact Analysis
+#
+# Использование:
+#   include:
+#     - project: 'security/devsecops-ci-templates'
+#       file: '/binary-artifact.yml'
+
+stages:
+  - binary-analysis
+
+binary-scan:
+  stage: binary-analysis
+  image: ${CI_REGISTRY}/security/scanner-images/binary-static-scanner:latest
+  script:
+    - echo "Scanning binary artifacts in ${ARTIFACT_PATH:-./dist}"
+    - yara -r /rules/ ${ARTIFACT_PATH:-./dist} > yara-report.json || true
+  artifacts:
+    paths:
+      - yara-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG

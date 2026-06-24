@@ -1,0 +1,29 @@
+# Secure Release — DAST + Compliance Gate
+#
+# Использование:
+#   include:
+#     - project: 'security/devsecops-ci-templates'
+#       file: '/secure-release.yml'
+
+stages:
+  - security-release
+
+dast-scan:
+  stage: security-release
+  image: owasp/zap2docker-stable:latest
+  script:
+    - zap-baseline.py -t ${APP_URL} -J dast-report.json || true
+  artifacts:
+    paths:
+      - dast-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG
+
+compliance-gate:
+  stage: security-release
+  image: openpolicyagent/opa:latest
+  script:
+    - opa eval --data policies/ --input scan-results.json "data.release.allow"
+  rules:
+    - if: $CI_COMMIT_TAG

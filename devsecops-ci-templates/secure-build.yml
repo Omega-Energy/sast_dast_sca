@@ -1,0 +1,21 @@
+# Secure Build — SBOM + Artifact Signing
+#
+# Использование:
+#   include:
+#     - project: 'security/devsecops-ci-templates'
+#       file: '/secure-build.yml'
+
+stages:
+  - security-build
+
+sbom-generation:
+  stage: security-build
+  image: ${CI_REGISTRY}/security/scanner-images/sbom-generator:latest
+  script:
+    - syft . -o cyclonedx-json > sbom.json
+    - grype sbom:sbom.json -o json > vulnerabilities.json
+  artifacts:
+    paths:
+      - sbom.json
+      - vulnerabilities.json
+    expire_in: 30 days

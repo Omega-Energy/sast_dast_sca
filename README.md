@@ -1,73 +1,90 @@
-# 🔐 SAST Security Dashboard
+# Security Platform
 
-Веб-дашборд для автоматизированного анализа безопасности Python-репозиториев с GitHub.
+Единая платформа безопасности для автоматизированного анализа кода, бинарей и инфраструктуры. Развёртывается на выделенном виртуальном сервере с Docker-контейнерами.
 
-## Инструменты
+## Архитектура
+
+```
+security-platform/
+├── trust-gateway/               # Центральный портал управления
+│   ├── portal-ui/               # Web UI (React, Vite, TailwindCSS)
+│   ├── api/                     # REST/WebSocket API (FastAPI)
+│   ├── workers/                 # Async workers (Celery/RQ)
+│   ├── connectors/              # GitLab, SonarQube, Cuckoo, AssemblyLine
+│   └── trustctl-cli/            # CLI-инструмент
+│
+├── devsecops-ci-templates/      # CI/CD шаблоны для GitLab
+│   ├── secure-source.yml        # SAST + secrets
+│   ├── secure-build.yml         # SBOM + signing
+│   ├── secure-release.yml       # DAST + compliance
+│   └── binary-artifact.yml      # Binary analysis
+│
+├── security-policy-as-code/     # Правила и политики
+│   ├── semgrep-rules/           # Кастомные Semgrep правила
+│   ├── yara-rules/              # YARA для бинарного анализа
+│   ├── opa-policies/            # OPA/Rego (release gates, access)
+│   ├── checkov-rules/           # IaC security
+│   ├── gitleaks-rules/          # Детекция секретов
+│   └── risk-scoring/            # Модель скоринга рисков
+│
+├── scanner-images/              # Docker-образы сканеров
+│   ├── source-scanner/          # Bandit + Semgrep + Gitleaks + pip-audit
+│   ├── binary-static-scanner/   # YARA + static analysis
+│   ├── unpacker/                # Распаковка/деобфускация
+│   └── sbom-generator/          # Syft + CycloneDX
+│
+├── assemblyline-custom-services/  # Сервисы для AssemblyLine
+│   ├── company-yara/
+│   ├── vendor-reputation/
+│   └── internal-binary-policy/
+│
+└── infrastructure/              # Деплой и инфра
+    ├── docker-compose/          # Compose для всех сервисов
+    ├── ansible/                 # Настройка VPS
+    ├── terraform/               # IaC (опционально)
+    └── diagrams/                # Архитектурные схемы
+```
+
+## Интеграции
+
+| Система | Роль |
+|---------|------|
+| **GitLab CI** | Запуск сканов в пайплайнах, webhooks |
+| **SonarQube** | Импорт результатов анализа качества кода |
+| **Cuckoo Sandbox** | Динамический анализ подозрительных файлов |
+| **AssemblyLine** | Конвейер анализа бинарей |
+
+## Инструменты безопасности
 
 | Инструмент | Тип | Что проверяет |
 |---|---|---|
-| **Bandit** | SAST | Уязвимости в Python-коде (SQLi, XSS, hardcoded secrets и др.) |
-| **Semgrep** | SAST + Secrets | Паттерны уязвимостей + утечки секретов в коде |
-| **pip-audit** | SCA | CVE в зависимостях из `requirements*.txt` / `pyproject.toml` |
-| **Gitleaks** | Secrets | Секреты (API keys, токены, пароли) в истории git |
-
-## Требования
-
-- Docker + Docker Compose v2
+| **Bandit** | SAST | Уязвимости в Python-коде |
+| **Semgrep** | SAST + Secrets | Паттерны уязвимостей + секреты |
+| **pip-audit** | SCA | CVE в зависимостях |
+| **Gitleaks** | Secrets | Секреты в git-истории |
+| **YARA** | Binary | Сигнатуры в бинарных файлах |
+| **OPA** | Policy | Compliance и release gates |
+| **Syft/Grype** | SBOM | Software Bill of Materials |
 
 ## Быстрый старт
 
 ```bash
-# Собрать и запустить
+# 1. Клонировать
+git clone https://github.com/Omega-Energy/sast_dast_sca.git
+cd sast_dast_sca
+
+# 2. Запустить (legacy-дашборд)
 docker compose up --build
 
-# Открыть дашборд в браузере
-start http://localhost:8000
+# 3. Открыть
+open http://localhost:8000
 ```
 
-## Возможности дашборда
+## Требования
 
-| Страница | Описание |
-|---|---|
-| **Dashboard** | Сводная статистика + график findings по сканам |
-| **New Scan** | Запуск скана с live-логом через WebSocket |
-| **History** | Таблица всех сканов со статусом и счётчиками |
-| **Compare** | Side-by-side сравнение двух сканов, новые findings |
-| **Scan Detail** | Таблицы findings с фильтрацией по severity/тексту + скачать JSON |
+- Docker + Docker Compose v2
+- Git
 
-## Приватные репозитории
+## Legacy: SAST Dashboard
 
-Вставь GitHub Personal Access Token (scope: `repo`) в поле **GitHub Token** в форме запуска.
-
-## Структура проекта
-
-```
-.
-├── docker-compose.yml          # Оркестрация
-├── backend/
-│   ├── Dockerfile.full         # Multi-stage: Node.js build + Python + tools
-│   ├── main.py                 # FastAPI + WebSocket + SQLite
-│   ├── scanner.py              # Логика запуска инструментов
-│   ├── models.py               # SQLModel схема БД
-│   ├── requirements.txt
-│   └── data/                   # SQLite БД (создаётся автоматически)
-├── frontend/
-│   ├── src/
-│   │   ├── pages/              # Dashboard, NewScan, ScanDetail, History, Compare
-│   │   ├── components/         # StatCard, Badge
-│   │   └── api.ts              # REST + WebSocket клиент
-│   └── package.json
-└── reports/                    # JSON-результаты сканов
-```
-
-## API
-
-| Метод | Путь | Описание |
-|---|---|---|
-| `POST` | `/api/scans` | Запустить новый скан |
-| `GET` | `/api/scans` | Список всех сканов |
-| `GET` | `/api/scans/{id}` | Статус скана |
-| `GET` | `/api/scans/{id}/results` | Результаты (JSON) |
-| `DELETE` | `/api/scans/{id}` | Удалить скан |
-| `GET` | `/api/stats` | Агрегированная статистика |
-| `WS` | `/ws/scans/{id}/log` | Live-лог выполнения |
+Текущий рабочий прототип находится в `backend/` и `frontend/` — SAST-дашборд для анализа Python-репозиториев с GitHub. Будет интегрирован в `trust-gateway/` на следующих этапах.
