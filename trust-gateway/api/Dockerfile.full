@@ -1,9 +1,9 @@
 # Stage 1: build React frontend
 FROM node:20-slim AS frontend-builder
 WORKDIR /frontend
-COPY frontend/package.json .
+COPY trust-gateway/portal-ui/package.json .
 RUN npm install
-COPY frontend/ .
+COPY trust-gateway/portal-ui/ .
 RUN npm run build
 
 # Stage 2: Python backend + security tools + static frontend
@@ -24,17 +24,17 @@ RUN GITLEAKS_VERSION=8.18.4 && \
     chmod +x /usr/local/bin/gitleaks
 
 # Python dependencies
-COPY backend/requirements.txt .
+COPY trust-gateway/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # YARA rules directory
 RUN mkdir -p /app/yara_rules
 
 # Backend source
-COPY backend/*.py .
+COPY trust-gateway/api/*.py .
 
 # Built-in YARA rules
-COPY backend/yara_rules/ /app/yara_rules/
+COPY trust-gateway/api/yara_rules/ /app/yara_rules/
 
 # Frontend built assets
 COPY --from=frontend-builder /frontend/dist /app/static
