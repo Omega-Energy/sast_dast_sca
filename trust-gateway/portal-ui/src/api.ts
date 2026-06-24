@@ -14,6 +14,7 @@ export interface ScanSummary {
   yara_count: number;
   dast_count: number;
   binary_count: number;
+  clamav_count: number;
   total_count: number;
   error: string | null;
 }
@@ -27,6 +28,7 @@ export interface ScanResults {
   yara: { findings: YaraFinding[]; error?: string };
   dast: { findings: DastFinding[]; skipped?: boolean; reason?: string; target_url?: string };
   binary: { findings: BinaryFinding[] };
+  clamav: { findings: ClamavFinding[]; error?: string };
 }
 
 export interface BanditFinding {
@@ -62,10 +64,14 @@ export interface GitleaksFinding {
   file: string; line: number; rule: string; description: string; match: string; commit: string;
 }
 
+export interface ClamavFinding {
+  file: string; threat: string; severity: string;
+}
+
 export interface Stats {
   total_scans: number; done: number; failed: number; running: number;
   total_findings: number; bandit_total: number; semgrep_total: number;
-  pip_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number; binary_total: number;
+  pip_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number; binary_total: number; clamav_total: number;
   history: {
     id: number; repo_name: string; created_at: string; total_count: number;
     bandit_count: number; semgrep_count: number; pip_audit_count: number;

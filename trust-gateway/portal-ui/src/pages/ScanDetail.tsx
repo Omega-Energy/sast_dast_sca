@@ -4,7 +4,7 @@ import { ArrowLeft, Download, Trash2, ChevronDown, ChevronUp } from "lucide-reac
 import { api, ScanSummary, ScanResults } from "../api";
 import { Badge, StatusBadge } from "../components/Badge";
 
-type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast" | "binary";
+type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast" | "binary" | "clamav";
 
 function TruncText({ text, max = 120 }: { text: string; max?: number }) {
   const [open, setOpen] = useState(false);
@@ -107,6 +107,7 @@ export default function ScanDetail() {
     { key: "yara",      label: "YARA",       count: scan?.yara_count ?? 0 },
     { key: "dast",      label: "DAST (ZAP)", count: scan?.dast_count ?? 0 },
     { key: "binary",    label: "Binaries",    count: scan?.binary_count ?? 0 },
+    { key: "clamav",    label: "ClamAV",      count: scan?.clamav_count ?? 0 },
   ];
 
   const applyFilters = <T extends { file?: string; severity?: string; title?: string; detail?: string; rule?: string; package?: string }>(
@@ -138,6 +139,8 @@ export default function ScanDetail() {
   const dastMeta = results?.dast;
   const binaryFindings = results ? [...(results.binary?.findings ?? [])].sort(sortBySeverity)
     .filter((f) => !filter || JSON.stringify(f).toLowerCase().includes(filter.toLowerCase())) : [];
+  const clamavFindings = results ? applyFilters([...(results.clamav?.findings ?? [])].sort(sortBySeverity)) : [];
+  const clamavError = results?.clamav?.error;
 
   return (
     <div className="p-8 space-y-6">
@@ -461,6 +464,40 @@ export default function ScanDetail() {
                   </tr>
                 ))}
               </FindingsTable>
+            )}
+
+            {tab === "clamav" && (
+              <div>
+                {clamavError && (
+                  <div className="px-6 py-4 text-sm text-amber-400 bg-amber-950/30 border border-amber-800/30 rounded-lg mx-4 my-3">
+                    <span className="font-semibold">ClamAV note:</span> {clamavError}
+                  </div>
+                )}
+                {!clamavError && clamavFindings.length === 0 && (
+                  <div className="px-6 py-10 text-center">
+                    <div className="text-green-400 text-lg font-semibold mb-1">✓ No threats detected</div>
+                    <div className="text-slate-500 text-sm">ClamAV antivirus scan completed — no malware, viruses, or trojans found.</div>
+                  </div>
+                )}
+                {clamavFindings.length > 0 && (
+                  <FindingsTable
+                    empty={false}
+                    headers={["Severity", "File", "Threat"]}
+                  >
+                    {clamavFindings.map((f, i) => (
+                      <tr key={i} className="border-b border-border/50 hover:bg-surface2/50">
+                        <td className="px-4 py-2.5"><Badge severity={f.severity} /></td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-red-400 max-w-sm break-all">{f.file}</td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-xs font-mono text-red-300 bg-red-950/40 px-2 py-0.5 rounded border border-red-800/40">
+                            {f.threat}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </FindingsTable>
+                )}
+              </div>
             )}
           </div>
         </div>
