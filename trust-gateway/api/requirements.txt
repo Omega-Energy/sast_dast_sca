@@ -11,3 +11,5 @@ pip-audit==2.7.3
 requests==2.32.3
 yara-python==4.5.1
 docker==7.1.0
+celery[redis]==5.4.0
+redis==5.0.4

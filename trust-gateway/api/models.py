@@ -4,8 +4,32 @@ from sqlmodel import Field, SQLModel, JSON, Column
 import sqlalchemy as sa
 
 
+class Project(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    description: str = ""
+    repo_url: str = ""
+    default_branch: str = "main"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    is_active: bool = True
+
+
+class Connector(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    connector_type: str  # gitlab | sonarqube | cuckoo | assemblyline
+    base_url: str = ""
+    api_token: Optional[str] = None
+    config_json: Optional[str] = Field(default=None, sa_column=Column(sa.Text))
+    status: str = "inactive"  # active | inactive | error
+    last_sync_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Scan(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: Optional[int] = Field(default=None, foreign_key="project.id")
     repo_url: str
     repo_name: str
     branch: str

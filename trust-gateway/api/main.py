@@ -15,7 +15,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from models import Scan
+from models import Scan, Project, Connector
 from scanner import stream_scan
 
 DATABASE_URL = "sqlite+aiosqlite:///./data/scans.db"
@@ -49,6 +49,13 @@ async def lifespan(app: FastAPI):
                 )
             except Exception:
                 pass  # column already exists
+        # Add project_id to scan if missing
+        try:
+            await conn.execute(
+                __import__("sqlalchemy").text("ALTER TABLE scan ADD COLUMN project_id INTEGER")
+            )
+        except Exception:
+            pass
     # Mark stale 'running' scans as failed (left over from previous crash/restart)
     async with AsyncSession(engine) as session:
         import sqlalchemy
@@ -105,6 +112,41 @@ class ScanSummary(BaseModel):
     binary_count: int
     total_count: int
     error: Optional[str]
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: str = ""
+    repo_url: str = ""
+    default_branch: str = "main"
+
+
+class ProjectResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    repo_url: str
+    default_branch: str
+    created_at: str
+    is_active: bool
+
+
+class ConnectorCreate(BaseModel):
+    name: str
+    connector_type: str  # gitlab | sonarqube | cuckoo | assemblyline
+    base_url: str = ""
+    api_token: str = ""
+    config: dict = {}
+
+
+class ConnectorResponse(BaseModel):
+    id: int
+    name: str
+    connector_type: str
+    base_url: str
+    status: str
+    last_sync_at: Optional[str]
+    created_at: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -311,6 +353,201 @@ async def get_stats():
     }
 
 
+# ── Projects API ──────────────────────────────────────────────────────────────
+
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(req: ProjectCreate):
+    async with SessionFactory() as session:
+        project = Project(
+            name=req.name,
+            description=req.description,
+            repo_url=req.repo_url,
+            default_branch=req.default_branch,
+        )
+        session.add(project)
+        await session.commit()
+        await session.refresh(project)
+        return _to_project_response(project)
+
+
+@app.get("/api/projects", response_model=List[ProjectResponse])
+async def list_projects():
+    async with SessionFactory() as session:
+        result = await session.execute(select(Project).order_by(Project.id.desc()))
+        projects = result.scalars().all()
+    return [_to_project_response(p) for p in projects]
+
+
+@app.get("/api/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(project_id: int):
+    async with SessionFactory() as session:
+        project = await session.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return _to_project_response(project)
+
+
+@app.put("/api/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(project_id: int, req: ProjectCreate):
+    async with SessionFactory() as session:
+        project = await session.get(Project, project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        project.name = req.name
+        project.description = req.description
+        project.repo_url = req.repo_url
+        project.default_branch = req.default_branch
+        project.updated_at = datetime.now(timezone.utc)
+        session.add(project)
+        await session.commit()
+        await session.refresh(project)
+        return _to_project_response(project)
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: int):
+    async with SessionFactory() as session:
+        project = await session.get(Project, project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        await session.delete(project)
+        await session.commit()
+    return {"ok": True}
+
+
+@app.get("/api/projects/{project_id}/scans", response_model=List[ScanSummary])
+async def list_project_scans(project_id: int):
+    async with SessionFactory() as session:
+        result = await session.execute(
+            select(Scan).where(Scan.project_id == project_id).order_by(Scan.id.desc())
+        )
+        scans = result.scalars().all()
+    return [_to_summary(s) for s in scans]
+
+
+# ── Connectors API ────────────────────────────────────────────────────────────
+
+@app.post("/api/connectors", response_model=ConnectorResponse)
+async def create_connector(req: ConnectorCreate):
+    async with SessionFactory() as session:
+        connector = Connector(
+            name=req.name,
+            connector_type=req.connector_type,
+            base_url=req.base_url,
+            api_token=req.api_token or None,
+            config_json=json.dumps(req.config) if req.config else None,
+            status="inactive",
+        )
+        session.add(connector)
+        await session.commit()
+        await session.refresh(connector)
+        return _to_connector_response(connector)
+
+
+@app.get("/api/connectors", response_model=List[ConnectorResponse])
+async def list_connectors():
+    async with SessionFactory() as session:
+        result = await session.execute(select(Connector).order_by(Connector.id.desc()))
+        connectors = result.scalars().all()
+    return [_to_connector_response(c) for c in connectors]
+
+
+@app.get("/api/connectors/{connector_id}", response_model=ConnectorResponse)
+async def get_connector(connector_id: int):
+    async with SessionFactory() as session:
+        connector = await session.get(Connector, connector_id)
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+    return _to_connector_response(connector)
+
+
+@app.post("/api/connectors/{connector_id}/test")
+async def test_connector(connector_id: int):
+    async with SessionFactory() as session:
+        connector = await session.get(Connector, connector_id)
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+
+    # Test connectivity based on connector type
+    from connectors.base import test_connection
+    success, message = await test_connection(connector)
+
+    async with SessionFactory() as session:
+        conn = await session.get(Connector, connector_id)
+        conn.status = "active" if success else "error"
+        session.add(conn)
+        await session.commit()
+
+    return {"ok": success, "message": message}
+
+
+@app.delete("/api/connectors/{connector_id}")
+async def delete_connector(connector_id: int):
+    async with SessionFactory() as session:
+        connector = await session.get(Connector, connector_id)
+        if not connector:
+            raise HTTPException(404, "Connector not found")
+        await session.delete(connector)
+        await session.commit()
+    return {"ok": True}
+
+
+# ── Webhooks ──────────────────────────────────────────────────────────────────
+
+@app.post("/api/webhooks/gitlab")
+async def gitlab_webhook(payload: dict):
+    """Handle GitLab webhook events — trigger scans on push."""
+    event = payload.get("object_kind", "")
+    if event != "push":
+        return {"ok": True, "skipped": True, "reason": f"Ignoring event: {event}"}
+
+    repo_url = payload.get("project", {}).get("git_http_url", "")
+    branch = payload.get("ref", "refs/heads/main").split("/")[-1]
+    repo_name = payload.get("project", {}).get("name", _repo_name(repo_url))
+
+    if not repo_url:
+        raise HTTPException(400, "No repo URL in webhook payload")
+
+    # Find matching project or create one
+    async with SessionFactory() as session:
+        result = await session.execute(select(Project).where(Project.repo_url == repo_url))
+        project = result.scalars().first()
+        if not project:
+            project = Project(name=repo_name, repo_url=repo_url, default_branch=branch)
+            session.add(project)
+            await session.commit()
+            await session.refresh(project)
+
+    # Create scan
+    async with SessionFactory() as session:
+        scan = Scan(
+            project_id=project.id,
+            repo_url=repo_url,
+            repo_name=repo_name,
+            branch=branch,
+            status="pending",
+        )
+        session.add(scan)
+        await session.commit()
+        await session.refresh(scan)
+        sid = scan.id
+
+    # Find gitlab connector token
+    token = ""
+    async with SessionFactory() as session:
+        result = await session.execute(
+            select(Connector).where(Connector.connector_type == "gitlab")
+        )
+        gl_connector = result.scalars().first()
+        if gl_connector and gl_connector.api_token:
+            token = gl_connector.api_token
+
+    task = asyncio.create_task(_run_scan(sid, repo_url, branch, token))
+    _scan_tasks[sid] = task
+
+    return {"ok": True, "scan_id": sid}
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/scans/{scan_id}/log")
@@ -379,4 +616,28 @@ def _to_summary(scan: Scan) -> ScanSummary:
         binary_count=scan.binary_count,
         total_count=scan.total_count,
         error=scan.error,
+    )
+
+
+def _to_project_response(project: Project) -> ProjectResponse:
+    return ProjectResponse(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        repo_url=project.repo_url,
+        default_branch=project.default_branch,
+        created_at=project.created_at.isoformat() if project.created_at else "",
+        is_active=project.is_active,
+    )
+
+
+def _to_connector_response(connector: Connector) -> ConnectorResponse:
+    return ConnectorResponse(
+        id=connector.id,
+        name=connector.name,
+        connector_type=connector.connector_type,
+        base_url=connector.base_url,
+        status=connector.status,
+        last_sync_at=connector.last_sync_at.isoformat() if connector.last_sync_at else None,
+        created_at=connector.created_at.isoformat() if connector.created_at else "",
     )

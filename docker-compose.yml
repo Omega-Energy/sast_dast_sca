@@ -16,4 +16,37 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - DOCKER_HOST=unix:///var/run/docker.sock
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: sast_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: trust-gateway/api/Dockerfile.full
+    container_name: sast_worker
+    command: celery -A workers.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./trust-gateway/api/data:/app/data
+      - ./reports:/app/reports
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis_data:
