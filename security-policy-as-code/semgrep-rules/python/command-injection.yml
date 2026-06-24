@@ -1,0 +1,41 @@
+rules:
+  - id: company-os-system
+    pattern: os.system(...)
+    message: >
+      os.system() is vulnerable to command injection.
+      Use subprocess.run() with a list of arguments instead.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: HIGH
+
+  - id: company-subprocess-shell-true
+    patterns:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+    message: >
+      subprocess with shell=True is vulnerable to injection.
+      Pass commands as a list without shell=True.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: HIGH
+
+  - id: company-eval-exec
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+    message: >
+      eval/exec can execute arbitrary code. Avoid using with any user input.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-95"
+      confidence: HIGH

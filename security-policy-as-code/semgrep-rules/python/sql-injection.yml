@@ -1,0 +1,51 @@
+rules:
+  - id: company-sql-injection-format-string
+    patterns:
+      - pattern: cursor.execute(f"...")
+    message: >
+      SQL injection via f-string. Use parameterized queries instead:
+      cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH
+
+  - id: company-sql-injection-percent-format
+    patterns:
+      - pattern: cursor.execute("..." % ...)
+    message: >
+      SQL injection via %-formatting. Use parameterized queries.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH
+
+  - id: company-sql-injection-concat
+    patterns:
+      - pattern: cursor.execute($QUERY + ...)
+      - pattern-not: cursor.execute($QUERY + "", $PARAMS)
+    message: >
+      SQL injection via string concatenation. Use parameterized queries.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: MEDIUM
+
+  - id: company-sqlalchemy-raw-text
+    patterns:
+      - pattern: session.execute(text(f"..."))
+    message: >
+      Raw SQL with f-string in SQLAlchemy. Use bound parameters:
+      session.execute(text("SELECT * FROM t WHERE id = :id"), {"id": val})
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH

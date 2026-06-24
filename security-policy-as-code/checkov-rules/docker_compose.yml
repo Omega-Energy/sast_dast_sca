@@ -1,0 +1,59 @@
+# Checkov custom policy — Docker Compose security
+# Validates docker-compose.yml configurations
+
+metadata:
+  id: "CUSTOM_COMPOSE_001"
+  name: "Ensure services do not use privileged mode"
+  category: "container-security"
+  severity: "HIGH"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "docker-compose"
+  attribute: "services.*.privileged"
+  operator: "not_equals"
+  value: "true"
+
+---
+metadata:
+  id: "CUSTOM_COMPOSE_002"
+  name: "Ensure services do not expose Docker socket without justification"
+  category: "container-security"
+  severity: "HIGH"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "docker-compose"
+  attribute: "services.*.volumes"
+  operator: "not_contains"
+  value: "/var/run/docker.sock"
+
+---
+metadata:
+  id: "CUSTOM_COMPOSE_003"
+  name: "Ensure services have resource limits"
+  category: "reliability"
+  severity: "MEDIUM"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "docker-compose"
+  attribute: "services.*.deploy.resources.limits"
+  operator: "exists"
+
+---
+metadata:
+  id: "CUSTOM_COMPOSE_004"
+  name: "Ensure services have restart policy"
+  category: "reliability"
+  severity: "LOW"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "docker-compose"
+  attribute: "services.*.restart"
+  operator: "exists"

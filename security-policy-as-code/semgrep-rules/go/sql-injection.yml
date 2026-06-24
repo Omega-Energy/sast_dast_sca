@@ -1,0 +1,43 @@
+rules:
+  - id: company-go-sql-format-string
+    patterns:
+      - pattern: $DB.Query(fmt.Sprintf("...", ...))
+      - pattern: $DB.Exec(fmt.Sprintf("...", ...))
+      - pattern: $DB.QueryRow(fmt.Sprintf("...", ...))
+    message: >
+      SQL injection via fmt.Sprintf in database query.
+      Use parameterized queries: db.Query("SELECT * FROM t WHERE id = $1", id)
+    severity: ERROR
+    languages: [go]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH
+
+  - id: company-go-sql-concat
+    patterns:
+      - pattern: $DB.Query("..." + $VAR + "...")
+      - pattern: $DB.Exec("..." + $VAR + "...")
+    message: >
+      SQL injection via string concatenation. Use query parameters.
+    severity: ERROR
+    languages: [go]
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH
+
+  - id: company-go-command-injection
+    patterns:
+      - pattern: exec.Command($CMD, ...)
+      - metavariable-regex:
+          metavariable: $CMD
+          regex: (?i)(sh|bash|cmd)
+    message: >
+      Shell execution detected. Ensure command arguments are not user-controlled.
+    severity: WARNING
+    languages: [go]
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: MEDIUM

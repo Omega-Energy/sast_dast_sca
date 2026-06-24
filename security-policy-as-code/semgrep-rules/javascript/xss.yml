@@ -1,0 +1,39 @@
+rules:
+  - id: company-react-dangerously-set-html
+    pattern: dangerouslySetInnerHTML={{__html: $VAR}}
+    message: >
+      dangerouslySetInnerHTML can lead to XSS. Sanitize input with DOMPurify
+      or avoid rendering raw HTML entirely.
+    severity: WARNING
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      cwe: "CWE-79"
+      confidence: MEDIUM
+
+  - id: company-document-write
+    patterns:
+      - pattern-either:
+          - pattern: document.write(...)
+          - pattern: document.writeln(...)
+    message: >
+      document.write() can introduce XSS vulnerabilities.
+      Use DOM manipulation methods instead.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      category: security
+      cwe: "CWE-79"
+      confidence: MEDIUM
+
+  - id: company-innerHTML-assignment
+    pattern: $EL.innerHTML = $VAR
+    message: >
+      Direct innerHTML assignment can lead to XSS.
+      Use textContent or sanitize with DOMPurify.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      category: security
+      cwe: "CWE-79"
+      confidence: MEDIUM

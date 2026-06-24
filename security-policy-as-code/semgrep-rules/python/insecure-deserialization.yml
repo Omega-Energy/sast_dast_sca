@@ -1,0 +1,43 @@
+rules:
+  - id: company-pickle-load
+    patterns:
+      - pattern-either:
+          - pattern: pickle.load(...)
+          - pattern: pickle.loads(...)
+          - pattern: cPickle.load(...)
+          - pattern: cPickle.loads(...)
+    message: >
+      Unsafe deserialization with pickle. Arbitrary code execution is possible.
+      Use JSON or a safe serialization format for untrusted data.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-502"
+      confidence: HIGH
+
+  - id: company-yaml-unsafe-load
+    patterns:
+      - pattern: yaml.load($DATA)
+      - pattern-not: yaml.load($DATA, Loader=yaml.SafeLoader)
+      - pattern-not: yaml.load($DATA, Loader=yaml.BaseLoader)
+    message: >
+      yaml.load() without SafeLoader allows arbitrary code execution.
+      Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-502"
+      confidence: HIGH
+
+  - id: company-shelve-open
+    pattern: shelve.open(...)
+    message: >
+      shelve uses pickle internally. Do not use with untrusted data.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      cwe: "CWE-502"
+      confidence: MEDIUM

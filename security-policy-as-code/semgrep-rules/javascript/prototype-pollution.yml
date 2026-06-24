@@ -1,0 +1,28 @@
+rules:
+  - id: company-prototype-pollution-merge
+    patterns:
+      - pattern-either:
+          - pattern: Object.assign($TARGET, $USER_INPUT)
+          - pattern: _.merge($TARGET, $USER_INPUT)
+          - pattern: $.extend(true, $TARGET, $USER_INPUT)
+    message: >
+      Deep merge with user-controlled input may lead to prototype pollution.
+      Validate input keys or use a safe merge library.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      category: security
+      cwe: "CWE-1321"
+      confidence: MEDIUM
+
+  - id: company-bracket-notation-assignment
+    pattern: $OBJ[$KEY] = $VAL
+    message: >
+      Dynamic property assignment with user-controlled key may lead to
+      prototype pollution if __proto__ or constructor is not filtered.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      category: security
+      cwe: "CWE-1321"
+      confidence: LOW

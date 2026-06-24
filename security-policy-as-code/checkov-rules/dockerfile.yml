@@ -1,0 +1,45 @@
+# Checkov custom policy — Dockerfile best practices
+# Format: Checkov YAML-based custom policies
+
+metadata:
+  id: "CUSTOM_DOCKERFILE_001"
+  name: "Ensure Dockerfile does not use latest tag"
+  category: "supply-chain"
+  severity: "MEDIUM"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "dockerfile"
+  attribute: "FROM"
+  operator: "not_contains"
+  value: ":latest"
+
+---
+metadata:
+  id: "CUSTOM_DOCKERFILE_002"
+  name: "Ensure Dockerfile has USER instruction"
+  category: "container-security"
+  severity: "HIGH"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "dockerfile"
+  attribute: "USER"
+  operator: "exists"
+
+---
+metadata:
+  id: "CUSTOM_DOCKERFILE_003"
+  name: "Ensure Dockerfile does not use ADD for remote URLs"
+  category: "supply-chain"
+  severity: "MEDIUM"
+
+definition:
+  cond_type: "attribute"
+  resource_types:
+    - "dockerfile"
+  attribute: "ADD"
+  operator: "not_contains"
+  value: "http"
