@@ -11,6 +11,7 @@ export default function NewScan() {
   const [showToken, setShowToken] = useState(false);
   const [localPath, setLocalPath] = useState("");
   const [localName, setLocalName] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [scan, setScan] = useState<ScanSummary | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -44,8 +45,8 @@ export default function NewScan() {
     setDone(false);
     try {
       const s = mode === "github"
-        ? await api.createScan(repoUrl.trim(), branch.trim() || "main", token.trim())
-        : await api.createLocalScan(toContainerPath(localPath.trim()), localName.trim());
+        ? await api.createScan(repoUrl.trim(), branch.trim() || "main", token.trim(), targetUrl.trim())
+        : await api.createLocalScan(toContainerPath(localPath.trim()), localName.trim(), targetUrl.trim());
       setScan(s);
       const ws = api.wsLog(s.id);
       ws.onmessage = (ev) => {
@@ -147,6 +148,19 @@ export default function NewScan() {
             </div>
           </>
         )}
+
+        <div>
+          <label className="block text-sm font-medium text-slate-300 mb-1.5">
+            DAST Target URL <span className="text-slate-500">(optional)</span>
+          </label>
+          <input type="url" value={targetUrl} onChange={(e) => setTargetUrl(e.target.value)}
+            placeholder="http://localhost:3000  — will scan with OWASP ZAP"
+            disabled={loading}
+            className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+          <p className="text-xs text-slate-500 mt-1">
+            If provided, DAST uses OWASP ZAP against this URL. If empty, DAST tries to auto-launch the project locally.
+          </p>
+        </div>
 
         <button type="submit"
           disabled={loading || (mode==="github" ? !repoUrl.trim() : !localPath.trim())}

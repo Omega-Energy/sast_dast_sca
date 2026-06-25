@@ -3,6 +3,7 @@ export interface ScanSummary {
   repo_url: string;
   repo_name: string;
   branch: string;
+  target_url: string | null;
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   finished_at: string | null;
@@ -26,7 +27,7 @@ export interface ScanResults {
   pip_audit: { findings: PipFinding[]; error?: string };
   gitleaks: { findings: GitleaksFinding[]; error?: string };
   yara: { findings: YaraFinding[]; error?: string };
-  dast: { findings: DastFinding[]; skipped?: boolean; reason?: string; target_url?: string };
+  dast: { findings: DastFinding[]; skipped?: boolean; reason?: string; target_url?: string; tool?: string };
   binary: { findings: BinaryFinding[] };
   clamav: { findings: ClamavFinding[]; error?: string };
 }
@@ -83,11 +84,11 @@ export interface Stats {
 const BASE = "";
 
 export const api = {
-  async createScan(repo_url: string, branch: string, github_token: string): Promise<ScanSummary> {
+  async createScan(repo_url: string, branch: string, github_token: string, target_url: string = ""): Promise<ScanSummary> {
     const r = await fetch(`${BASE}/api/scans`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo_url, branch, github_token }),
+      body: JSON.stringify({ repo_url, branch, github_token, target_url }),
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
@@ -118,11 +119,11 @@ export const api = {
     return r.json();
   },
 
-  async createLocalScan(local_path: string, name: string): Promise<ScanSummary> {
+  async createLocalScan(local_path: string, name: string, target_url: string = ""): Promise<ScanSummary> {
     const r = await fetch(`${BASE}/api/scans/local`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ local_path, name }),
+      body: JSON.stringify({ local_path, name, target_url }),
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json();

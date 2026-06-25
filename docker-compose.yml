@@ -7,7 +7,7 @@ services:
       dockerfile: trust-gateway/api/Dockerfile.full
     container_name: sast_api
     ports:
-      - "8000:8000"
+      - "8080:8000"
     volumes:
       - ./trust-gateway/api/data:/app/data
       - ./reports:/app/reports
@@ -17,8 +17,10 @@ services:
       - PYTHONUNBUFFERED=1
       - DOCKER_HOST=unix:///var/run/docker.sock
       - REDIS_URL=redis://redis:6379/0
+      - ZAP_API_URL=http://zap:8090
     depends_on:
       - redis
+      - zap
     restart: unless-stopped
 
   redis:
