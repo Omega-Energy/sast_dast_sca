@@ -11,9 +11,12 @@ import os
 import re
 import sys
 import time
+import uuid
 import signal
 import socket
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin, quote
@@ -21,7 +24,14 @@ from urllib.parse import urljoin, quote
 import requests
 from requests.exceptions import RequestException
 
+try:
+    import docker
+    DOCKER_AVAILABLE = True
+except ImportError:
+    DOCKER_AVAILABLE = False
+
 APP_STARTUP_WAIT = 8     # seconds to wait for app to be ready
+CONTAINER_START_WAIT = 30  # seconds to wait for a containerized app
 SCAN_TIMEOUT     = 5     # per-request timeout seconds
 MAX_CRAWL_DEPTH  = 20    # max URLs to test
 
@@ -35,11 +45,26 @@ def run_dast(repo_dir: Path, log: Callable[[str], None], target_url: str = "") -
     Run DAST.
 
     - If target_url is given, use OWASP ZAP against that URL.
-    - Otherwise, try to auto-launch the app from repo_dir and run the
-      lightweight built-in HTTP checks.
+    - Otherwise, try to build/run a temporary container from the repo
+      (Dockerfile if present, otherwise generated from project type) and
+      scan it with ZAP or the built-in checks.
+    - If containerization fails, fall back to the legacy local auto-launch.
     """
     if target_url:
         return _run_zap_dast(target_url, log)
+
+    if DOCKER_AVAILABLE:
+        log("DAST: no target_url provided, trying containerized launch…")
+        try:
+            container_result = _run_containerized_dast(repo_dir, log)
+            if not container_result.get("skipped"):
+                return container_result
+            log(f"DAST: containerized launch skipped — {container_result.get('reason', '')}")
+        except Exception as exc:
+            log(f"DAST: containerized launch failed ({exc}), falling back to local launch")
+    else:
+        log("DAST: docker SDK not available, using local auto-launch")
+
     return _run_local_dast(repo_dir, log)
 
 
@@ -138,6 +163,191 @@ def _zap_alert_to_finding(alert: dict) -> dict:
     }
 
 
+# ── Containerized auto-launch DAST ────────────────────────────────────────────
+
+
+def _run_containerized_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
+    """Build a temporary image from the repo (Dockerfile or generated) and scan the container."""
+    if not DOCKER_AVAILABLE:
+        return {"findings": [], "skipped": True, "reason": "docker SDK not available"}
+
+    project_type = _detect_project_type(repo_dir)
+    dockerfile_path = repo_dir / "Dockerfile"
+    has_dockerfile = dockerfile_path.exists()
+
+    if not has_dockerfile and not project_type:
+        return {"findings": [], "skipped": True,
+                "reason": "No Dockerfile and unsupported project type for containerized DAST"}
+
+    client = docker.from_env()
+    image_tag = f"sast-dast-target-{uuid.uuid4().hex[:8]}"
+    container_name = f"sast-dast-target-{uuid.uuid4().hex[:8]}"
+    temp_build_dir = None
+
+    try:
+        if has_dockerfile:
+            log("DAST: found Dockerfile, building temporary image…")
+            build_context = str(repo_dir)
+            internal_port = _dockerfile_exposed_port(dockerfile_path)
+        else:
+            log(f"DAST: generating Dockerfile for {project_type} project…")
+            generated = _generate_dockerfile(repo_dir, project_type)
+            if not generated:
+                return {"findings": [], "skipped": True,
+                        "reason": f"Could not generate Dockerfile for project type '{project_type}'"}
+            temp_build_dir = tempfile.mkdtemp(prefix="sast-dast-")
+            build_context = temp_build_dir
+            shutil.copytree(repo_dir, Path(temp_build_dir) / "app", dirs_exist_ok=True)
+            (Path(temp_build_dir) / "Dockerfile").write_text(generated, encoding="utf-8")
+            internal_port = 8080
+
+        for line in client.images.build(path=build_context, tag=image_tag, rm=True, forcerm=True):
+            if isinstance(line, dict) and "stream" in line and line["stream"].strip():
+                log(f"DAST build: {line['stream'].strip()}")
+
+        network = _guess_worker_network(client)
+        target_url = f"http://{container_name}:{internal_port}"
+        log(f"DAST: starting container {container_name} on {network} ({target_url})…")
+
+        container = client.containers.run(
+            image_tag,
+            name=container_name,
+            network=network,
+            detach=True,
+            environment={"PORT": str(internal_port), "HOST": "0.0.0.0"},
+            remove=True,
+        )
+
+        ready = _wait_for_http(target_url, timeout=CONTAINER_START_WAIT)
+        if not ready:
+            return {"findings": [], "skipped": True,
+                    "reason": "Containerized app did not become ready in time — DAST skipped"}
+
+        log("DAST: containerized app is ready, starting scan…")
+        return _run_zap_dast(target_url, log)
+
+    except Exception as exc:
+        log(f"DAST: containerized run failed ({exc})")
+        return {"findings": [], "skipped": True, "reason": f"Containerized DAST error: {exc}"}
+
+    finally:
+        try:
+            c = client.containers.get(container_name)
+            if c:
+                c.stop(timeout=5)
+                c.remove(force=True)
+        except Exception:
+            pass
+        try:
+            client.images.remove(image_tag, force=True)
+        except Exception:
+            pass
+        if temp_build_dir:
+            shutil.rmtree(temp_build_dir, ignore_errors=True)
+        client.close()
+
+
+def _dockerfile_exposed_port(dockerfile_path: Path) -> int:
+    """Parse the first EXPOSE instruction in a Dockerfile."""
+    try:
+        text = dockerfile_path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            match = re.match(r"^\s*EXPOSE\s+(\d+)", line, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    except Exception:
+        pass
+    return 8080
+
+
+def _guess_worker_network(client) -> str:
+    """Try to attach the target container to the same network as the current worker."""
+    try:
+        hostname = os.environ.get("HOSTNAME", "")
+        if hostname:
+            for container in client.containers.list():
+                if container.id.startswith(hostname) or container.short_id == hostname:
+                    networks = list(container.attrs.get("NetworkSettings", {}).get("Networks", {}).keys())
+                    if networks:
+                        return networks[0]
+    except Exception:
+        pass
+    return "bridge"
+
+
+def _wait_for_http(url: str, timeout: int) -> bool:
+    """Poll a URL until it responds or timeout passes."""
+    deadline = time.time() + timeout
+    session = requests.Session()
+    session.verify = False
+    while time.time() < deadline:
+        try:
+            resp = session.get(url, timeout=3, allow_redirects=True)
+            if resp.status_code < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+
+def _generate_dockerfile(repo_dir: Path, project_type: str) -> str | None:
+    """Generate a minimal Dockerfile for supported project types."""
+    if project_type == "python":
+        entrypoint = _detect_python_entrypoint(repo_dir)
+        cmd = f'CMD ["python", "{entrypoint}"]' if entrypoint else 'CMD ["python", "app.py"]'
+        return f"""FROM python:3.12-slim
+WORKDIR /app
+COPY app /app
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt --break-system-packages; fi
+EXPOSE 8080
+ENV PORT=8080 HOST=0.0.0.0
+{cmd}
+"""
+    if project_type == "node":
+        pkg = repo_dir / "package.json"
+        try:
+            import json
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            has_start = "start" in data.get("scripts", {})
+        except Exception:
+            has_start = False
+        if has_start:
+            cmd = 'CMD ["npm", "start"]'
+        elif (repo_dir / "server.js").exists():
+            cmd = 'CMD ["node", "server.js"]'
+        elif (repo_dir / "app.js").exists():
+            cmd = 'CMD ["node", "app.js"]'
+        else:
+            cmd = 'CMD ["node", "index.js"]'
+        return f"""FROM node:20-slim
+WORKDIR /app
+COPY app /app
+RUN if [ -f package.json ]; then npm install; fi
+EXPOSE 8080
+ENV PORT=8080 HOST=0.0.0.0
+{cmd}
+"""
+    if project_type == "ruby":
+        return """FROM ruby:3-slim
+WORKDIR /app
+COPY app /app
+RUN bundle install || true
+EXPOSE 8080
+ENV PORT=8080 HOST=0.0.0.0
+CMD ["ruby", "-e", "require 'rack'; Rack::Server.start(config: 'config.ru', Port: (ENV['PORT'] || 8080).to_i, Host: '0.0.0.0')"]
+"""
+    if project_type == "static":
+        return """FROM python:3.12-slim
+WORKDIR /app
+COPY app /app
+EXPOSE 8080
+ENV PORT=8080 HOST=0.0.0.0
+CMD ["python", "-m", "http.server", "8080"]
+"""
+    return None
+
+
 # ── Local auto-launch + lightweight scanner ───────────────────────────────────
 
 
@@ -223,6 +433,8 @@ def _detect_project_type(repo_dir: Path) -> str | None:
     for ptype, sigs in checks:
         if any((repo_dir / s).exists() for s in sigs):
             return ptype
+    if any((repo_dir / s).exists() for s in ["index.html", "public/index.html", "dist/index.html"]):
+        return "static"
     return None
 
 
