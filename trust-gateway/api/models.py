@@ -33,6 +33,7 @@ class Scan(SQLModel, table=True):
     repo_url: str
     repo_name: str
     branch: str
+    target_url: Optional[str] = None
     status: str = "pending"  # pending | running | done | failed
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: Optional[datetime] = None
