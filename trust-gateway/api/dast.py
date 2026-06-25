@@ -30,8 +30,8 @@ try:
 except ImportError:
     DOCKER_AVAILABLE = False
 
-APP_STARTUP_WAIT = 8     # seconds to wait for app to be ready
-CONTAINER_START_WAIT = 30  # seconds to wait for a containerized app
+APP_STARTUP_WAIT = int(os.environ.get("DAST_APP_START_WAIT", 30))      # seconds to wait for local app
+CONTAINER_START_WAIT = int(os.environ.get("DAST_CONTAINER_START_WAIT", 60))  # seconds to wait for containerized app
 SCAN_TIMEOUT     = 5     # per-request timeout seconds
 MAX_CRAWL_DEPTH  = 20    # max URLs to test
 
@@ -201,9 +201,17 @@ def _run_containerized_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
             (Path(temp_build_dir) / "Dockerfile").write_text(generated, encoding="utf-8")
             internal_port = 8080
 
-        for line in client.images.build(path=build_context, tag=image_tag, rm=True, forcerm=True):
-            if isinstance(line, dict) and "stream" in line and line["stream"].strip():
-                log(f"DAST build: {line['stream'].strip()}")
+        try:
+            for line in client.images.build(path=build_context, tag=image_tag, rm=True, forcerm=True):
+                if isinstance(line, dict) and "stream" in line and line["stream"].strip():
+                    log(f"DAST build: {line['stream'].strip()}")
+        except docker.errors.BuildError as exc:
+            for item in exc.build_log:
+                if isinstance(item, dict) and item.get("error"):
+                    log(f"DAST build error: {item['error'].strip()}")
+                elif isinstance(item, dict) and item.get("stream"):
+                    log(f"DAST build: {item['stream'].strip()}")
+            raise
 
         network = _guess_worker_network(client)
         target_url = f"http://{container_name}:{internal_port}"
@@ -220,6 +228,9 @@ def _run_containerized_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
 
         ready = _wait_for_http(target_url, timeout=CONTAINER_START_WAIT)
         if not ready:
+            logs = _container_logs(client, container_name)
+            if logs:
+                log("DAST: container logs:\n" + logs)
             return {"findings": [], "skipped": True,
                     "reason": "Containerized app did not become ready in time — DAST skipped"}
 
@@ -228,6 +239,9 @@ def _run_containerized_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
 
     except Exception as exc:
         log(f"DAST: containerized run failed ({exc})")
+        logs = _container_logs(client, container_name)
+        if logs:
+            log("DAST: container logs:\n" + logs)
         return {"findings": [], "skipped": True, "reason": f"Containerized DAST error: {exc}"}
 
     finally:
@@ -273,6 +287,15 @@ def _guess_worker_network(client) -> str:
     except Exception:
         pass
     return "bridge"
+
+
+def _container_logs(client, container_name: str) -> str:
+    """Fetch last lines of a container's logs for debugging."""
+    try:
+        c = client.containers.get(container_name)
+        return c.logs(tail=80).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 def _wait_for_http(url: str, timeout: int) -> bool:
