@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Download, Trash2, ChevronDown, ChevronUp } from "lucide-react";
-import { api, ScanSummary, ScanResults } from "../api";
+import { api, ScanSummary, ScanResults, DastFinding } from "../api";
 import { Badge, StatusBadge } from "../components/Badge";
 
 type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast" | "binary" | "clamav";
@@ -27,6 +27,115 @@ function TruncText({ text, max = 120 }: { text: string; max?: number }) {
 const severityOrder: Record<string, number> = { HIGH: 0, ERROR: 0, MEDIUM: 1, WARNING: 1, LOW: 2, INFO: 3 };
 const sortBySeverity = (a: { severity: string }, b: { severity: string }) =>
   (severityOrder[a.severity?.toUpperCase()] ?? 4) - (severityOrder[b.severity?.toUpperCase()] ?? 4);
+
+function DastFindingsTable({ findings }: { findings: DastFinding[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (i: number) => {
+    const next = new Set(expanded);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    setExpanded(next);
+  };
+  if (findings.length === 0) {
+    return (
+      <div className="px-6 py-10 text-center text-slate-500 text-sm">
+        No DAST findings.
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-border text-left text-xs text-slate-500 uppercase tracking-wide">
+          <th className="px-4 py-3 w-10"></th>
+          <th className="px-4 py-3">Severity</th>
+          <th className="px-4 py-3">Alert</th>
+          <th className="px-4 py-3">CWE</th>
+          <th className="px-4 py-3 text-center">Count</th>
+          <th className="px-4 py-3">Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        {findings.map((f, i) => (
+          <>
+            <tr
+              key={i}
+              onClick={() => toggle(i)}
+              className="border-b border-border/50 hover:bg-surface2/50 align-top cursor-pointer"
+            >
+              <td className="px-4 py-3 text-slate-500">
+                {expanded.has(i) ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap"><Badge severity={f.severity} /></td>
+              <td className="px-4 py-3 text-sm font-semibold text-slate-200 whitespace-nowrap">{f.name}</td>
+              <td className="px-4 py-3 whitespace-nowrap">
+                {f.cwe ? (
+                  <span className="font-mono text-xs text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">
+                    CWE-{f.cwe}
+                  </span>
+                ) : <span className="text-slate-600">—</span>}
+              </td>
+              <td className="px-4 py-3 text-xs text-slate-400 text-center">{f.count}</td>
+              <td className="px-4 py-3 text-xs text-slate-400 max-w-sm">
+                <TruncText text={f.description} max={120} />
+              </td>
+            </tr>
+            {expanded.has(i) && (
+              <tr className="bg-surface2/30">
+                <td colSpan={6} className="px-4 py-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                    <div className="space-y-2">
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wide">Description</span>
+                        <p className="text-slate-300 mt-1">{f.description}</p>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wide">Solution</span>
+                        <p className="text-green-400 mt-1">{f.solution || "—"}</p>
+                      </div>
+                      <div className="flex gap-4">
+                        <span>Confidence: <span className="text-slate-300">{f.confidence || "—"}</span></span>
+                        {f.wasc && <span>WASC: <span className="text-slate-300">{f.wasc}</span></span>}
+                      </div>
+                      {f.reference && (
+                        <div className="space-y-1">
+                          <span className="text-slate-500 uppercase tracking-wide">References</span>
+                          <div className="flex flex-wrap gap-2">
+                            {f.reference.split(/\s+/).filter((u) => u.startsWith("http")).map((url, j) => (
+                              <a
+                                key={j}
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-indigo-400 hover:underline"
+                              >
+                                {url.length > 60 ? url.slice(0, 60) + "…" : url}
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-slate-500 uppercase tracking-wide">Affected URLs</span>
+                      <ul className="mt-1 space-y-1 max-h-48 overflow-y-auto">
+                        {(f.urls ?? []).map((u, j) => (
+                          <li key={j} className="font-mono text-slate-400 break-all">
+                            {u}
+                          </li>
+                        ))}
+                        {(f.urls ?? []).length === 0 && <li className="text-slate-600">—</li>}
+                      </ul>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 export default function ScanDetail() {
   const { id } = useParams<{ id: string }>();
@@ -189,12 +298,13 @@ export default function ScanDetail() {
 
       {/* Summary cards */}
       {scan.status === "done" && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-5 gap-3">
           {[
             { label: "Bandit", count: scan.bandit_count, color: "text-orange-400" },
             { label: "Semgrep", count: scan.semgrep_count, color: "text-indigo-400" },
             { label: "pip-audit", count: scan.pip_audit_count, color: "text-red-400" },
             { label: "Gitleaks", count: scan.gitleaks_count, color: "text-purple-400" },
+            { label: "DAST", count: scan.dast_count, color: "text-blue-400" },
           ].map((c) => (
             <div key={c.label} className="bg-surface border border-border rounded-xl px-5 py-4">
               <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">{c.label}</div>
@@ -378,40 +488,23 @@ export default function ScanDetail() {
                   </div>
                 )}
                 {dastMeta?.target_url && (
-                  <div className="px-6 py-2 text-xs text-slate-500">
-                    Target: <span className="font-mono text-indigo-400">{dastMeta.target_url}</span>
+                  <div className="px-6 py-3 flex items-center gap-3 text-xs border-b border-border">
+                    <span className="text-slate-500">Target:</span>
+                    <a href={dastMeta.target_url} target="_blank" rel="noreferrer" className="font-mono text-indigo-400 hover:underline">
+                      {dastMeta.target_url}
+                    </a>
                     {dastMeta?.tool && (
-                      <span className="ml-3 px-2 py-0.5 rounded bg-surface2 border border-border text-slate-400">
+                      <span className={`ml-auto px-2 py-0.5 rounded border ${
+                        dastMeta.tool === "zap"
+                          ? "bg-blue-950/40 border-blue-800/40 text-blue-300"
+                          : "bg-amber-950/40 border-amber-800/40 text-amber-300"
+                      }`}>
                         tool: {dastMeta.tool}
                       </span>
                     )}
                   </div>
                 )}
-                <FindingsTable
-                  empty={dastFindings.length === 0}
-                  headers={["Severity", "Alert", "CWE", "Count", "Description", "Solution"]}
-                >
-                  {dastFindings.map((f, i) => (
-                    <tr key={i} className="border-b border-border/50 hover:bg-surface2/50 align-top">
-                      <td className="px-4 py-3 whitespace-nowrap"><Badge severity={f.severity} /></td>
-                      <td className="px-4 py-3 text-sm font-semibold text-slate-200 whitespace-nowrap">{f.name}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        {f.cwe ? (
-                          <span className="font-mono text-xs text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">
-                            CWE-{f.cwe}
-                          </span>
-                        ) : <span className="text-slate-600">—</span>}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-slate-400 text-center">{f.count}</td>
-                      <td className="px-4 py-3 text-xs text-slate-400 max-w-sm">
-                        <TruncText text={f.description} max={150} />
-                      </td>
-                      <td className="px-4 py-3 text-xs text-green-400 max-w-xs">
-                        <TruncText text={f.solution} max={120} />
-                      </td>
-                    </tr>
-                  ))}
-                </FindingsTable>
+                <DastFindingsTable findings={dastFindings} />
               </div>
             )}
 

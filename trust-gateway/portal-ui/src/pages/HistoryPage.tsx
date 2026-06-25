@@ -54,6 +54,7 @@ export default function HistoryPage() {
               <th className="px-4 py-3">Semgrep</th>
               <th className="px-4 py-3">pip-audit</th>
               <th className="px-4 py-3">Gitleaks</th>
+              <th className="px-4 py-3">DAST</th>
               <th className="px-4 py-3">Duration</th>
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3"></th>
@@ -78,6 +79,11 @@ export default function HistoryPage() {
                 <td className="px-4 py-3 text-indigo-400">{s.status === "done" ? s.semgrep_count : "—"}</td>
                 <td className="px-4 py-3 text-red-400">{s.status === "done" ? s.pip_audit_count : "—"}</td>
                 <td className="px-4 py-3 text-purple-400">{s.status === "done" ? s.gitleaks_count : "—"}</td>
+                <td className="px-4 py-3 text-blue-400">
+                  <span title={s.target_url || undefined}>
+                    {s.status === "done" ? s.dast_count : "—"}
+                  </span>
+                </td>
                 <td className="px-4 py-3 text-slate-500 text-xs">
                   {s.duration_sec != null ? `${s.duration_sec.toFixed(0)}s` : "—"}
                 </td>
@@ -96,7 +102,7 @@ export default function HistoryPage() {
             ))}
             {scans.length === 0 && !loading && (
               <tr>
-                <td colSpan={12} className="px-6 py-10 text-center text-slate-500">
+                <td colSpan={13} className="px-6 py-10 text-center text-slate-500">
                   No scans yet.
                 </td>
               </tr>

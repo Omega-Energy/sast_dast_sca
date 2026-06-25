@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ScanSearch, Eye, EyeOff, Github, FolderOpen } from "lucide-react";
+import { ScanSearch, Eye, EyeOff, Github, FolderOpen, Shield, Globe, Zap, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { api, ScanSummary } from "../api";
 
 export default function NewScan() {
@@ -12,7 +12,11 @@ export default function NewScan() {
   const [localPath, setLocalPath] = useState("");
   const [localName, setLocalName] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
+  const [dastEnabled, setDastEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const targetUrlValid = !targetUrl.trim() || /^https?:\/\/.+/.test(targetUrl.trim());
+  const dastMode = dastEnabled && targetUrl.trim() ? "zap" : dastEnabled ? "local" : "off";
   const [scan, setScan] = useState<ScanSummary | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [done, setDone] = useState(false);
@@ -149,21 +153,76 @@ export default function NewScan() {
           </>
         )}
 
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">
-            DAST Target URL <span className="text-slate-500">(optional)</span>
-          </label>
-          <input type="url" value={targetUrl} onChange={(e) => setTargetUrl(e.target.value)}
-            placeholder="http://localhost:3000  — will scan with OWASP ZAP"
-            disabled={loading}
-            className="w-full bg-surface2 border border-border rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
-          <p className="text-xs text-slate-500 mt-1">
-            If provided, DAST uses OWASP ZAP against this URL. If empty, DAST tries to auto-launch the project locally.
-          </p>
+        <div className="border border-border rounded-lg p-4 space-y-4 bg-surface/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Shield size={18} className="text-indigo-400" />
+              <span className="text-sm font-semibold text-slate-200">Dynamic Application Security Testing (DAST)</span>
+            </div>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={dastEnabled}
+                onChange={(e) => setDastEnabled(e.target.checked)}
+                disabled={loading}
+                className="rounded border-border bg-surface2 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-slate-300">Enable DAST</span>
+            </label>
+          </div>
+
+          {dastEnabled && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-xs">
+                {dastMode === "zap" ? (
+                  <span className="flex items-center gap-1 px-2 py-1 rounded bg-blue-950/40 border border-blue-800/40 text-blue-300">
+                    <Zap size={12} /> OWASP ZAP mode
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 px-2 py-1 rounded bg-amber-950/40 border border-amber-800/40 text-amber-300">
+                    <AlertTriangle size={12} /> Local auto-launch mode
+                  </span>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  Target URL <span className="text-slate-500">(optional)</span>
+                </label>
+                <div className="relative">
+                  <Globe size={16} className="absolute left-3 top-3 text-slate-500" />
+                  <input
+                    type="url"
+                    value={targetUrl}
+                    onChange={(e) => setTargetUrl(e.target.value)}
+                    placeholder="http://localhost:3000"
+                    disabled={loading}
+                    className={`w-full bg-surface2 border rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50 ${
+                      targetUrlValid ? "border-border" : "border-red-500 focus:border-red-500"
+                    }`}
+                  />
+                </div>
+                {targetUrlValid ? (
+                  <p className="text-xs text-slate-500 mt-1.5 flex items-center gap-1">
+                    <CheckCircle2 size={12} />
+                    {dastMode === "zap"
+                      ? "OWASP ZAP will spider and actively scan the provided URL."
+                      : "The scanner will try to auto-launch and test the local application."}
+                  </p>
+                ) : (
+                  <p className="text-xs text-red-400 mt-1.5">Please enter a valid http:// or https:// URL.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!dastEnabled && (
+            <p className="text-xs text-slate-500">Enable DAST to scan a running application with OWASP ZAP or the local fallback scanner.</p>
+          )}
         </div>
 
         <button type="submit"
-          disabled={loading || (mode==="github" ? !repoUrl.trim() : !localPath.trim())}
+          disabled={loading || (mode==="github" ? !repoUrl.trim() : !localPath.trim()) || !targetUrlValid}
           className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded-lg text-sm font-semibold transition-colors">
           <ScanSearch size={16} />
           {loading ? "Scanning…" : "Start Scan"}
