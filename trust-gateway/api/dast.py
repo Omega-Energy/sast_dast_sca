@@ -226,7 +226,15 @@ def _run_containerized_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
             remove=True,
         )
 
-        ready = _wait_for_http(target_url, timeout=CONTAINER_START_WAIT)
+        actual_port = _discover_container_port(client, container_name, internal_port,
+                                               timeout=CONTAINER_START_WAIT)
+        if actual_port:
+            target_url = f"http://{container_name}:{actual_port}"
+            log(f"DAST: container listening on port {actual_port}")
+            ready = _wait_for_http(target_url, timeout=15)
+        else:
+            ready = False
+
         if not ready:
             logs = _container_logs(client, container_name)
             if logs:
@@ -296,6 +304,46 @@ def _container_logs(client, container_name: str) -> str:
         return c.logs(tail=80).decode("utf-8", errors="replace")
     except Exception:
         return ""
+
+
+def _get_container_listening_ports(client, container_name: str) -> list[int]:
+    """Return LISTEN ports inside the container by parsing /proc/net/tcp."""
+    try:
+        c = client.containers.get(container_name)
+        result = c.exec_run("cat /proc/net/tcp", stdout=True, stderr=True)
+        text = result.output.decode("utf-8", errors="replace")
+        ports = []
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local_addr, state = parts[1], parts[3]
+            if state != "0A":  # LISTEN
+                continue
+            _, port_hex = local_addr.split(":")
+            ports.append(int(port_hex, 16))
+        return sorted(set(ports))
+    except Exception:
+        return []
+
+
+def _discover_container_port(client, container_name: str, default_port: int, timeout: int) -> int | None:
+    """Poll the container for a port that actually accepts HTTP traffic."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ports = _get_container_listening_ports(client, container_name)
+        if ports:
+            ordered = ([default_port] if default_port in ports else []) + [p for p in ports if p != default_port]
+            for port in ordered:
+                url = f"http://{container_name}:{port}"
+                try:
+                    resp = requests.get(url, timeout=3, allow_redirects=True)
+                    if resp.status_code < 500:
+                        return port
+                except Exception:
+                    pass
+        time.sleep(1)
+    return None
 
 
 def _wait_for_http(url: str, timeout: int) -> bool:
