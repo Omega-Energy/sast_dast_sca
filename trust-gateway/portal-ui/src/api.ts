@@ -11,6 +11,7 @@ export interface ScanSummary {
   bandit_count: number;
   semgrep_count: number;
   pip_audit_count: number;
+  npm_audit_count: number;
   gitleaks_count: number;
   yara_count: number;
   dast_count: number;
@@ -25,6 +26,7 @@ export interface ScanResults {
   bandit: { findings: BanditFinding[]; error?: string };
   semgrep: { findings: SemgrepFinding[]; error?: string };
   pip_audit: { findings: PipFinding[]; error?: string };
+  npm_audit: { findings: NpmFinding[]; error?: string };
   gitleaks: { findings: GitleaksFinding[]; error?: string };
   yara: { findings: YaraFinding[]; error?: string };
   dast: { findings: DastFinding[]; skipped?: boolean; reason?: string; target_url?: string; tool?: string };
@@ -43,6 +45,12 @@ export interface SemgrepFinding {
 
 export interface PipFinding {
   package: string; version: string; vuln_id: string; detail: string; fix: string;
+  url: string; aliases: string[];
+}
+
+export interface NpmFinding {
+  package: string; version: string; vuln_id: string; severity: string;
+  title: string; detail: string; range: string; fix: string;
   url: string; aliases: string[];
 }
 
@@ -73,11 +81,11 @@ export interface ClamavFinding {
 export interface Stats {
   total_scans: number; done: number; failed: number; running: number;
   total_findings: number; bandit_total: number; semgrep_total: number;
-  pip_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number; binary_total: number; clamav_total: number;
+  pip_audit_total: number; npm_audit_total: number; gitleaks_total: number; yara_total: number; dast_total: number; binary_total: number; clamav_total: number;
   history: {
     id: number; repo_name: string; created_at: string; total_count: number;
     bandit_count: number; semgrep_count: number; pip_audit_count: number;
-    gitleaks_count: number; yara_count: number; dast_count: number;
+    npm_audit_count: number; gitleaks_count: number; yara_count: number; dast_count: number;
   }[];
 }
 

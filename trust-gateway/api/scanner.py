@@ -183,6 +183,11 @@ async def stream_scan(
         results["pip_audit"] = {"findings": [], "error": str(e)}
     await log(f"pip-audit: {len(results['pip_audit']['findings'])} vulnerabilities.")
 
+    # npm audit
+    await log("Running npm audit (SCA)…")
+    results["npm_audit"] = await asyncio.to_thread(_run_npm_audit, repo_dir)
+    await log(f"npm audit: {len(results['npm_audit']['findings'])} vulnerabilities.")
+
     # Gitleaks
     await log("Running Gitleaks (secrets in git history)…")
     gl_out = REPORT_DIR / f"gitleaks_{scan_id}.json"
@@ -488,3 +493,81 @@ def _extract_pip_summary(description: str, max_len: int = 300) -> str:
     if len(text) > max_len:
         text = text[:max_len].rsplit(" ", 1)[0] + "…"
     return text
+
+
+# ── npm audit (Node.js SCA) ───────────────────────────────────────────────────
+
+
+def _run_npm_audit(repo_dir: Path) -> dict:
+    """Run npm audit for Node.js projects and parse findings."""
+    pkg_files = list(repo_dir.rglob("package.json"))
+    if not pkg_files:
+        return {"findings": [], "error": "No package.json found"}
+
+    findings = []
+    errors: list[str] = []
+
+    for pkg_file in pkg_files[:3]:
+        cwd = pkg_file.parent
+        r = _run(["npm", "audit", "--json"], cwd=cwd)
+        if not r.stdout.strip():
+            if r.stderr.strip():
+                errors.append(f"{cwd}: {r.stderr.strip()[:200]}")
+            continue
+        try:
+            data = json.loads(r.stdout)
+        except Exception as e:
+            errors.append(f"{cwd}: JSON parse error: {e}")
+            continue
+
+        # npm v7+ format
+        for pkg_name, info in data.get("vulnerabilities", {}).items():
+            severity = info.get("severity", "UNKNOWN")
+            via_list = info.get("via", [])
+            range_ = info.get("range", "")
+            fix = info.get("fixAvailable", {})
+            fix_version = fix.get("version", "") if isinstance(fix, dict) else ("" if not fix else "available")
+            for v in via_list:
+                if isinstance(v, dict):
+                    findings.append({
+                        "package": pkg_name,
+                        "version": "",
+                        "vuln_id": str(v.get("source", "")),
+                        "severity": v.get("severity", severity),
+                        "title": v.get("title", ""),
+                        "detail": v.get("title", ""),
+                        "range": v.get("range", range_),
+                        "fix": fix_version,
+                        "url": v.get("url", ""),
+                        "aliases": [],
+                    })
+                elif isinstance(v, str):
+                    findings.append({
+                        "package": pkg_name,
+                        "version": "",
+                        "vuln_id": "",
+                        "severity": severity,
+                        "title": v,
+                        "detail": v,
+                        "range": range_,
+                        "fix": fix_version,
+                        "url": "",
+                        "aliases": [],
+                    })
+
+        # npm v6 format
+        for adv_id, adv in data.get("advisories", {}).items():
+            findings.append({
+                "package": adv.get("module_name", ""),
+                "version": "",
+                "vuln_id": str(adv_id),
+                "severity": adv.get("severity", "UNKNOWN"),
+                "title": adv.get("title", ""),
+                "detail": adv.get("overview", ""),
+                "range": adv.get("vulnerable_versions", ""),
+                "fix": adv.get("patched_versions", ""),
+                "url": adv.get("url", ""),
+                "aliases": [],
+            })
+
+    return {"findings": findings, "error": "; ".join(errors) if errors else None}

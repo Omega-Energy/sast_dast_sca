@@ -4,7 +4,7 @@ import { ArrowLeft, Download, Trash2, ChevronDown, ChevronUp } from "lucide-reac
 import { api, ScanSummary, ScanResults, DastFinding } from "../api";
 import { Badge, StatusBadge } from "../components/Badge";
 
-type Tab = "bandit" | "semgrep" | "pip_audit" | "gitleaks" | "yara" | "dast" | "binary" | "clamav";
+type Tab = "bandit" | "semgrep" | "pip_audit" | "npm_audit" | "gitleaks" | "yara" | "dast" | "binary" | "clamav";
 
 function TruncText({ text, max = 120 }: { text: string; max?: number }) {
   const [open, setOpen] = useState(false);
@@ -212,6 +212,7 @@ export default function ScanDetail() {
     { key: "bandit",    label: "Bandit",    count: scan?.bandit_count ?? 0 },
     { key: "semgrep",   label: "Semgrep",   count: scan?.semgrep_count ?? 0 },
     { key: "pip_audit", label: "pip-audit", count: scan?.pip_audit_count ?? 0 },
+    { key: "npm_audit", label: "npm audit", count: scan?.npm_audit_count ?? 0 },
     { key: "gitleaks",  label: "Gitleaks",  count: scan?.gitleaks_count ?? 0 },
     { key: "yara",      label: "YARA",       count: scan?.yara_count ?? 0 },
     { key: "dast",      label: "DAST (ZAP)", count: scan?.dast_count ?? 0 },
@@ -238,6 +239,9 @@ export default function ScanDetail() {
   const banditFindings = results ? applyFilters([...results.bandit.findings].sort(sortBySeverity)) : [];
   const semgrepFindings = results ? applyFilters([...results.semgrep.findings].sort(sortBySeverity)) : [];
   const pipFindings = results ? results.pip_audit.findings.filter((f) =>
+    !filter || JSON.stringify(f).toLowerCase().includes(filter.toLowerCase())
+  ) : [];
+  const npmFindings = results ? results.npm_audit.findings.filter((f) =>
     !filter || JSON.stringify(f).toLowerCase().includes(filter.toLowerCase())
   ) : [];
   const gitleaksFindings = results ? results.gitleaks.findings.filter((f) =>
@@ -303,6 +307,7 @@ export default function ScanDetail() {
             { label: "Bandit", count: scan.bandit_count, color: "text-orange-400" },
             { label: "Semgrep", count: scan.semgrep_count, color: "text-indigo-400" },
             { label: "pip-audit", count: scan.pip_audit_count, color: "text-red-400" },
+            { label: "npm audit", count: scan.npm_audit_count, color: "text-pink-400" },
             { label: "Gitleaks", count: scan.gitleaks_count, color: "text-purple-400" },
             { label: "DAST", count: scan.dast_count, color: "text-blue-400" },
           ].map((c) => (
@@ -447,6 +452,39 @@ export default function ScanDetail() {
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400 max-w-md">
                       <TruncText text={f.detail} max={200} />
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {f.url ? (
+                        <a href={f.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-400 hover:underline">
+                          Advisory
+                        </a>
+                      ) : <span className="text-slate-600">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </FindingsTable>
+            )}
+
+            {tab === "npm_audit" && (
+              <FindingsTable
+                empty={npmFindings.length === 0}
+                headers={["Package", "CVE / ID", "Severity", "Vulnerable Range", "Fix", "Description", "Link"]}
+              >
+                {npmFindings.map((f, i) => (
+                  <tr key={i} className="border-b border-border/50 hover:bg-surface2/50 align-top">
+                    <td className="px-4 py-3 font-semibold text-slate-200 whitespace-nowrap">{f.package}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="font-mono text-xs text-red-300 bg-red-950/50 px-2 py-0.5 rounded border border-red-800/40">
+                        {f.vuln_id || "VULN"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap"><Badge severity={f.severity} /></td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{f.range}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="font-mono text-xs text-green-400">{f.fix}</span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-400 max-w-md">
+                      <TruncText text={f.detail || f.title} max={200} />
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       {f.url ? (

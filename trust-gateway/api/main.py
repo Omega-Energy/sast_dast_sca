@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
             ("yara_count", "INTEGER NOT NULL DEFAULT 0"),
             ("dast_count", "INTEGER NOT NULL DEFAULT 0"),
             ("binary_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("npm_audit_count", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             try:
                 await conn.execute(
@@ -114,6 +115,7 @@ class ScanSummary(BaseModel):
     bandit_count: int
     semgrep_count: int
     pip_audit_count: int
+    npm_audit_count: int
     gitleaks_count: int
     yara_count: int
     dast_count: int
@@ -195,6 +197,7 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
         b = len(results.get("bandit", {}).get("findings", []))
         s = len(results.get("semgrep", {}).get("findings", []))
         p = len(results.get("pip_audit", {}).get("findings", []))
+        n = len(results.get("npm_audit", {}).get("findings", []))
         g = len(results.get("gitleaks", {}).get("findings", []))
         y = len(results.get("yara", {}).get("findings", []))
         da = len(results.get("dast", {}).get("findings", []))
@@ -209,12 +212,13 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
             scan.bandit_count = b
             scan.semgrep_count = s
             scan.pip_audit_count = p
+            scan.npm_audit_count = n
             scan.gitleaks_count = g
             scan.yara_count = y
             scan.dast_count = da
             scan.binary_count = bi
             scan.clamav_count = cl
-            scan.total_count = b + s + p + g + y + da + bi + cl
+            scan.total_count = b + s + p + n + g + y + da + bi + cl
             scan.results_json = json.dumps(results, ensure_ascii=False)
             session.add(scan)
             await session.commit()
@@ -344,6 +348,7 @@ async def get_stats():
         "bandit_total": sum(s.bandit_count for s in done),
         "semgrep_total": sum(s.semgrep_count for s in done),
         "pip_audit_total": sum(s.pip_audit_count for s in done),
+        "npm_audit_total": sum(s.npm_audit_count for s in done),
         "gitleaks_total": sum(s.gitleaks_count for s in done),
         "yara_total": sum(s.yara_count for s in done),
         "dast_total": sum(s.dast_count for s in done),
@@ -358,6 +363,7 @@ async def get_stats():
                 "bandit_count": s.bandit_count,
                 "semgrep_count": s.semgrep_count,
                 "pip_audit_count": s.pip_audit_count,
+                "npm_audit_count": s.npm_audit_count,
                 "gitleaks_count": s.gitleaks_count,
                 "yara_count": s.yara_count,
                 "dast_count": s.dast_count,
@@ -625,6 +631,7 @@ def _to_summary(scan: Scan) -> ScanSummary:
         bandit_count=scan.bandit_count,
         semgrep_count=scan.semgrep_count,
         pip_audit_count=scan.pip_audit_count,
+        npm_audit_count=scan.npm_audit_count,
         gitleaks_count=scan.gitleaks_count,
         yara_count=scan.yara_count,
         dast_count=scan.dast_count,

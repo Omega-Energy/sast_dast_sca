@@ -43,6 +43,7 @@ class Scan(SQLModel, table=True):
     bandit_count: int = 0
     semgrep_count: int = 0
     pip_audit_count: int = 0
+    npm_audit_count: int = 0
     gitleaks_count: int = 0
     yara_count: int = 0
     dast_count: int = 0

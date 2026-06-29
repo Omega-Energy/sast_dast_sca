@@ -30,6 +30,7 @@ export default function Dashboard() {
     Bandit: h.bandit_count,
     Semgrep: h.semgrep_count,
     "pip-audit": h.pip_audit_count,
+    "npm audit": h.npm_audit_count,
     Gitleaks: h.gitleaks_count,
   }));
 
@@ -54,7 +55,8 @@ export default function Dashboard() {
         <StatCard label="Completed" value={stats?.done ?? "—"} icon={ShieldCheck} color="green" />
         <StatCard label="Failed" value={stats?.failed ?? "—"} icon={ShieldAlert} color="red" />
         <StatCard label="Bandit" value={stats?.bandit_total ?? "—"} icon={Bug} color="orange" sub="SAST findings" />
-        <StatCard label="pip-audit" value={stats?.pip_audit_total ?? "—"} icon={Layers} color="red" sub="CVE" />
+        <StatCard label="pip-audit" value={stats?.pip_audit_total ?? "—"} icon={Layers} color="red" sub="Python CVE" />
+        <StatCard label="npm audit" value={stats?.npm_audit_total ?? "—"} icon={Layers} color="pink" sub="Node CVE" />
         <StatCard label="Secrets" value={stats?.gitleaks_total ?? "—"} icon={KeyRound} color="purple" sub="Gitleaks" />
       </div>
 
