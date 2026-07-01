@@ -41,10 +41,12 @@ async def stream_scan(
     github_token: str,
     log_cb: Callable,
     local_path: str = "",
+    target_url: str = "",
 ) -> dict:
     """
     Run full scan pipeline, calling log_cb(line) for each log line.
     If local_path is set, skip git clone and scan that directory directly.
+    If target_url is set, pass it to DAST for ZAP-based scanning.
     Returns the results dict.
     """
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -239,7 +241,7 @@ async def stream_scan(
         def _log_collect(msg: str):
             dast_log_lines.append(msg)
 
-        results["dast"] = await asyncio.to_thread(run_dast, repo_dir, _log_collect)
+        results["dast"] = await asyncio.to_thread(run_dast, repo_dir, _log_collect, target_url)
         for line in dast_log_lines:
             await log(line)
         skipped = results["dast"].get("skipped", False)

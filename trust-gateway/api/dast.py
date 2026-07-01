@@ -1,6 +1,11 @@
 """
-DAST module: launch target app as subprocess, run lightweight Python HTTP scanner.
-No Docker, no ZAP — fast and non-blocking.
+Hybrid DAST module.
+
+1. If target_url is provided, the scan is routed through the OWASP ZAP container
+   (spider + active scan). This is the proper DAST mode for already-running apps.
+2. If target_url is omitted, the module falls back to the legacy behaviour:
+   auto-detect project type, launch the app locally, and run lightweight HTTP
+   security checks.
 """
 import os
 import re
@@ -11,45 +16,146 @@ import socket
 import subprocess
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urljoin, urlparse, quote
+from urllib.parse import urljoin, quote
 
 import requests
 from requests.exceptions import RequestException
 
 APP_STARTUP_WAIT = 8     # seconds to wait for app to be ready
-APP_PORT_RANGE   = (18000, 18999)  # port range for target apps
 SCAN_TIMEOUT     = 5     # per-request timeout seconds
 MAX_CRAWL_DEPTH  = 20    # max URLs to test
 
-
-def _free_port() -> int:
-    """Find a free TCP port on the host."""
-    with socket.socket() as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+ZAP_URL = os.environ.get("ZAP_API_URL", "http://zap:8090")
+ZAP_POLL_INTERVAL = 2    # seconds between ZAP status polls
+ZAP_SCAN_TIMEOUT = 600   # max seconds to wait for ZAP active scan
 
 
-def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
+def run_dast(repo_dir: Path, log: Callable[[str], None], target_url: str = "") -> dict:
     """
-    1. Detect project type & entrypoint.
-    2. Launch app as subprocess on a free port.
-    3. Wait for it to respond.
-    4. Run lightweight HTTP security checks.
-    5. Kill app, return findings.
+    Run DAST.
+
+    - If target_url is given, use OWASP ZAP against that URL.
+    - Otherwise, try to auto-launch the app from repo_dir and run the
+      lightweight built-in HTTP checks.
     """
+    if target_url:
+        return _run_zap_dast(target_url, log)
+    return _run_local_dast(repo_dir, log)
+
+
+# ── ZAP-based DAST ───────────────────────────────────────────────────────────
+
+
+def _run_zap_dast(target_url: str, log: Callable[[str], None]) -> dict:
+    """Use OWASP ZAP API to spider and actively scan a running target URL."""
+    log(f"DAST: using OWASP ZAP against {target_url}…")
+    try:
+        from zapv2 import ZAPv2
+    except ImportError as exc:
+        log(f"DAST: ZAP Python client not installed ({exc}), falling back to built-in scanner")
+        return _run_http_checks(target_url, log, via_zap=False)
+
+    try:
+        zap = ZAPv2(proxies={"http": ZAP_URL, "https": ZAP_URL})
+        # Quick health check
+        version = zap.core.version
+        log(f"DAST: connected to ZAP {version}")
+    except Exception as exc:
+        log(f"DAST: cannot reach ZAP at {ZAP_URL} ({exc}), falling back to built-in scanner")
+        return _run_http_checks(target_url, log, via_zap=False)
+
+    try:
+        # Make sure ZAP sees the target
+        zap.urlopen(target_url)
+        time.sleep(1)
+
+        # Spider scan
+        log("DAST: starting ZAP spider…")
+        spider_id = zap.spider.scan(target_url)
+        if not spider_id or spider_id == "-1":
+            raise RuntimeError("ZAP refused to start spider scan")
+        _wait_for_zap(zap.spider.status, spider_id, log, "spider")
+        log(f"DAST: ZAP spider finished, found {len(zap.spider.results(spider_id))} URLs")
+
+        # Active scan
+        log("DAST: starting ZAP active scan…")
+        ascan_id = zap.ascan.scan(target_url)
+        if not ascan_id or ascan_id == "-1":
+            raise RuntimeError("ZAP refused to start active scan")
+        _wait_for_zap(zap.ascan.status, ascan_id, log, "active scan", timeout=ZAP_SCAN_TIMEOUT)
+        log("DAST: ZAP active scan finished")
+
+        # Collect alerts
+        alerts = zap.core.alerts(baseurl=target_url)
+        findings = [_zap_alert_to_finding(a) for a in alerts]
+        log(f"DAST: ZAP found {len(findings)} alert(s)")
+        return {"findings": findings, "skipped": False, "target_url": target_url, "tool": "zap"}
+
+    except Exception as exc:
+        log(f"DAST: ZAP scan failed ({exc}), falling back to built-in scanner")
+        return _run_http_checks(target_url, log, via_zap=False)
+
+
+def _wait_for_zap(status_fn, scan_id: str, log: Callable[[str], None],
+                  phase: str, timeout: int = ZAP_SCAN_TIMEOUT) -> None:
+    """Poll ZAP until a scan phase reaches 100%."""
+    deadline = time.time() + timeout
+    last_status = ""
+    while time.time() < deadline:
+        try:
+            status = str(status_fn(scan_id))
+        except Exception:
+            status = "0"
+        if status != last_status:
+            log(f"DAST: ZAP {phase} progress {status}%")
+            last_status = status
+        if status == "100":
+            return
+        time.sleep(ZAP_POLL_INTERVAL)
+    raise TimeoutError(f"ZAP {phase} did not finish within {timeout}s")
+
+
+def _zap_alert_to_finding(alert: dict) -> dict:
+    """Normalize a ZAP alert to the platform finding format."""
+    risk = alert.get("risk", "Informational")
+    severity = {
+        "High": "HIGH",
+        "Medium": "MEDIUM",
+        "Low": "LOW",
+        "Informational": "INFO",
+    }.get(risk, "INFO")
+    return {
+        "name": alert.get("alert", "ZAP alert"),
+        "severity": severity,
+        "confidence": alert.get("confidence", "Medium"),
+        "description": alert.get("description", ""),
+        "solution": alert.get("solution", ""),
+        "reference": alert.get("reference", ""),
+        "cwe": alert.get("cweid", ""),
+        "wasc": alert.get("wascid", ""),
+        "urls": [alert.get("url", "")],
+        "count": 1,
+    }
+
+
+# ── Local auto-launch + lightweight scanner ───────────────────────────────────
+
+
+def _run_local_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
+    """Legacy mode: detect project type, launch locally, run built-in checks."""
     project_type = _detect_project_type(repo_dir)
     if not project_type:
         return {"findings": [], "skipped": True, "reason": "Could not detect project type — DAST skipped"}
 
     launch_cmd = _build_launch_command(repo_dir, project_type)
     if not launch_cmd:
-        return {"findings": [], "skipped": True, "reason": f"No launch command for project type '{project_type}' — DAST skipped"}
+        return {"findings": [], "skipped": True,
+                "reason": f"No launch command for project type '{project_type}' — DAST skipped"}
 
     port = _free_port()
     target_url = f"http://127.0.0.1:{port}"
     log(f"DAST: detected {project_type} project, launching on port {port}…")
 
-    # Install Python deps if requirements.txt present and no valid venv
     if project_type == "python":
         req_file = repo_dir / "requirements.txt"
         venv_ok = any([
@@ -80,16 +186,15 @@ def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
             start_new_session=True,
         )
 
-        # Wait for app to respond
         log(f"DAST: waiting up to {APP_STARTUP_WAIT}s for app to start…")
         ready = _wait_for_port(port, timeout=APP_STARTUP_WAIT)
         if not ready:
             return {"findings": [], "skipped": True, "reason": "App did not start in time — DAST skipped"}
 
-        log("DAST: app is up, running HTTP security checks…")
+        log("DAST: app is up, running built-in HTTP security checks…")
         findings = _run_http_checks(target_url, log)
         log(f"DAST: {len(findings)} findings.")
-        return {"findings": findings, "skipped": False, "target_url": target_url}
+        return {"findings": findings, "skipped": False, "target_url": target_url, "tool": "builtin"}
 
     except Exception as e:
         return {"findings": [], "skipped": True, "reason": f"DAST error: {e}"}
@@ -106,6 +211,7 @@ def run_dast(repo_dir: Path, log: Callable[[str], None]) -> dict:
 
 
 # ── Project detection & launch ────────────────────────────────────────────────
+
 
 def _detect_project_type(repo_dir: Path) -> str | None:
     checks = [
@@ -131,7 +237,6 @@ def _detect_python_entrypoint(repo_dir: Path) -> str | None:
                     return c
             except Exception:
                 pass
-    # fallback: any .py with web framework
     for py in repo_dir.glob("*.py"):
         try:
             content = py.read_text(errors="replace")
@@ -144,7 +249,6 @@ def _detect_python_entrypoint(repo_dir: Path) -> str | None:
 
 def _build_launch_command(repo_dir: Path, project_type: str) -> list | None:
     if project_type == "python":
-        # Check both Linux and Windows venv layouts (project may come from Windows host)
         venv_candidates = [
             repo_dir / "venv" / "bin" / "python",
             repo_dir / ".venv" / "bin" / "python",
@@ -156,7 +260,6 @@ def _build_launch_command(repo_dir: Path, project_type: str) -> list | None:
         entrypoint = _detect_python_entrypoint(repo_dir)
         if entrypoint:
             return [python_bin, entrypoint]
-        # Try uvicorn if FastAPI
         return [python_bin, "-c",
                 "import sys; sys.path.insert(0,''); "
                 "exec(open(next(f for f in ['app.py','main.py'] if __import__('os').path.exists(f))).read())"]
@@ -179,6 +282,12 @@ def _build_launch_command(repo_dir: Path, project_type: str) -> list | None:
     return None
 
 
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
 def _wait_for_port(port: int, timeout: int) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -192,28 +301,31 @@ def _wait_for_port(port: int, timeout: int) -> bool:
 
 # ── HTTP Security Checks ──────────────────────────────────────────────────────
 
-def _run_http_checks(base_url: str, log: Callable[[str], None]) -> list:
+
+def _run_http_checks(base_url: str, log: Callable[[str], None], via_zap: bool = False) -> dict:
+    """Lightweight built-in HTTP checks. Returns a DAST result dict."""
     findings = []
     session = requests.Session()
     session.verify = False
     session.max_redirects = 3
 
-    # 1. Fetch root to get baseline headers & links
     try:
         root_resp = session.get(base_url, timeout=SCAN_TIMEOUT, allow_redirects=True)
     except RequestException as e:
-        return [{"name": "App unreachable", "severity": "INFO",
-                 "description": str(e), "url": base_url}]
+        return {
+            "findings": [{"name": "App unreachable", "severity": "INFO",
+                          "description": str(e), "url": base_url}],
+            "skipped": False,
+            "target_url": base_url,
+            "tool": "zap-fallback" if via_zap else "builtin",
+        }
 
-    # ── Security headers check ────────────────────────────────────────────────
     log("DAST: checking security headers…")
     findings += _check_security_headers(root_resp)
 
-    # ── Collect URLs to test ──────────────────────────────────────────────────
     urls = _extract_urls(root_resp, base_url)
     log(f"DAST: found {len(urls)} endpoints to probe…")
 
-    # ── Check each endpoint ───────────────────────────────────────────────────
     tested = set()
     for url in list(urls)[:MAX_CRAWL_DEPTH]:
         if url in tested:
@@ -225,7 +337,12 @@ def _run_http_checks(base_url: str, log: Callable[[str], None]) -> list:
             pass
 
     findings.sort(key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}.get(x.get("severity", "INFO"), 4))
-    return findings
+    return {
+        "findings": findings,
+        "skipped": False,
+        "target_url": base_url,
+        "tool": "zap-fallback" if via_zap else "builtin",
+    }
 
 
 def _check_security_headers(resp: requests.Response) -> list:
@@ -246,19 +363,16 @@ def _check_security_headers(resp: requests.Response) -> list:
             findings.append({"name": f"Missing {header}", "severity": sev,
                              "description": msg, "url": url})
 
-    # Server header leaks version
     server = headers.get("server", "")
     if re.search(r"[\d.]{3,}", server):
         findings.append({"name": "Server version disclosure", "severity": "LOW",
                          "description": f"Server header exposes version: {server}", "url": url})
 
-    # X-Powered-By leaks tech
     powered = headers.get("x-powered-by", "")
     if powered:
         findings.append({"name": "X-Powered-By disclosure", "severity": "LOW",
                          "description": f"X-Powered-By header reveals tech stack: {powered}", "url": url})
 
-    # Cookies without Secure/HttpOnly
     for cookie in resp.cookies:
         issues = []
         if not cookie.secure:
@@ -276,12 +390,10 @@ def _extract_urls(resp: requests.Response, base_url: str) -> list:
     urls = [base_url]
     try:
         text = resp.text
-        # href links
         for href in re.findall(r'href=["\']([^"\'#?]+)', text):
             full = urljoin(base_url, href)
             if full.startswith(base_url):
                 urls.append(full)
-        # form actions
         for action in re.findall(r'action=["\']([^"\']+)', text):
             full = urljoin(base_url, action)
             if full.startswith(base_url):
@@ -295,7 +407,6 @@ def _check_endpoint(session: requests.Session, url: str, base_url: str,
                     log: Callable[[str], None]) -> list:
     findings = []
 
-    # ── SQL injection probes ──────────────────────────────────────────────────
     sql_payloads = ["'", "\" OR \"1\"=\"1", "' OR '1'='1", "1; DROP TABLE users--"]
     sql_errors = ["sql syntax", "mysql_fetch", "ORA-", "pg_query", "sqlite3", "syntax error",
                   "unclosed quotation", "unterminated string"]
@@ -313,7 +424,6 @@ def _check_endpoint(session: requests.Session, url: str, base_url: str,
         except RequestException:
             pass
 
-    # ── XSS probe ─────────────────────────────────────────────────────────────
     xss_payload = "<script>alert(1)</script>"
     probe_url = url + ("&" if "?" in url else "?") + f"q={quote(xss_payload)}"
     try:
@@ -325,7 +435,6 @@ def _check_endpoint(session: requests.Session, url: str, base_url: str,
     except RequestException:
         pass
 
-    # ── Open redirect probe ───────────────────────────────────────────────────
     redirect_payload = "https://evil.example.com"
     for param in ["redirect", "next", "url", "return", "goto"]:
         probe_url = url + ("&" if "?" in url else "?") + f"{param}={quote(redirect_payload)}"
@@ -339,7 +448,6 @@ def _check_endpoint(session: requests.Session, url: str, base_url: str,
         except RequestException:
             pass
 
-    # ── Directory traversal probe ─────────────────────────────────────────────
     traversal = "../../../../etc/passwd"
     probe_url = url + ("&" if "?" in url else "?") + f"file={quote(traversal)}"
     try:
@@ -351,7 +459,6 @@ def _check_endpoint(session: requests.Session, url: str, base_url: str,
     except RequestException:
         pass
 
-    # ── HTTP methods check ────────────────────────────────────────────────────
     try:
         r = session.options(url, timeout=SCAN_TIMEOUT)
         allow = r.headers.get("allow", r.headers.get("Allow", ""))

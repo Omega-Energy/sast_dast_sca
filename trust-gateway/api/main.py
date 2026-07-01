@@ -49,10 +49,11 @@ async def lifespan(app: FastAPI):
                 )
             except Exception:
                 pass  # column already exists
-        # Add project_id and clamav_count to scan if missing
+        # Add project_id, clamav_count and target_url to scan if missing
         for col, typedef in [
             ("project_id", "INTEGER"),
             ("clamav_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("target_url", "TEXT"),
         ]:
             try:
                 await conn.execute(
@@ -91,11 +92,13 @@ class ScanRequest(BaseModel):
     repo_url: str
     branch: str = "main"
     github_token: str = ""
+    target_url: str = ""  # optional DAST target URL
 
 
 class LocalScanRequest(BaseModel):
     local_path: str
     name: str = ""  # optional display name
+    target_url: str = ""  # optional DAST target URL
 
 
 class ScanSummary(BaseModel):
@@ -103,6 +106,7 @@ class ScanSummary(BaseModel):
     repo_url: str
     repo_name: str
     branch: str
+    target_url: Optional[str]
     status: str
     created_at: str
     finished_at: Optional[str]
@@ -171,7 +175,7 @@ async def _broadcast(scan_id: int, msg: str):
         _ws_clients[scan_id].remove(ws)
 
 
-async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_path: str = ""):
+async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_path: str = "", target_url: str = ""):
     async with SessionFactory() as session:
         scan = await session.get(Scan, scan_id)
         scan.status = "running"
@@ -187,7 +191,7 @@ async def _run_scan(scan_id: int, repo_url: str, branch: str, token: str, local_
         await _broadcast(scan_id, msg)
 
     try:
-        results = await stream_scan(scan_id, repo_url, branch, token, log_cb, local_path=local_path)
+        results = await stream_scan(scan_id, repo_url, branch, token, log_cb, local_path=local_path, target_url=target_url)
         b = len(results.get("bandit", {}).get("findings", []))
         s = len(results.get("semgrep", {}).get("findings", []))
         p = len(results.get("pip_audit", {}).get("findings", []))
@@ -246,6 +250,7 @@ async def create_scan(req: ScanRequest):
             repo_url=req.repo_url,
             repo_name=_repo_name(req.repo_url),
             branch=req.branch,
+            target_url=req.target_url or None,
             status="pending",
         )
         session.add(scan)
@@ -253,7 +258,7 @@ async def create_scan(req: ScanRequest):
         await session.refresh(scan)
         sid = scan.id
 
-    task = asyncio.create_task(_run_scan(sid, req.repo_url, req.branch, req.github_token))
+    task = asyncio.create_task(_run_scan(sid, req.repo_url, req.branch, req.github_token, target_url=req.target_url))
     _scan_tasks[sid] = task
 
     async with SessionFactory() as session:
@@ -269,6 +274,7 @@ async def create_local_scan(req: LocalScanRequest):
             repo_url=f"local://{req.local_path}",
             repo_name=display_name,
             branch="local",
+            target_url=req.target_url or None,
             status="pending",
         )
         session.add(scan)
@@ -276,7 +282,7 @@ async def create_local_scan(req: LocalScanRequest):
         await session.refresh(scan)
         sid = scan.id
 
-    task = asyncio.create_task(_run_scan(sid, f"local://{req.local_path}", "local", "", local_path=req.local_path))
+    task = asyncio.create_task(_run_scan(sid, f"local://{req.local_path}", "local", "", local_path=req.local_path, target_url=req.target_url))
     _scan_tasks[sid] = task
 
     async with SessionFactory() as session:
@@ -611,6 +617,7 @@ def _to_summary(scan: Scan) -> ScanSummary:
         repo_url=scan.repo_url,
         repo_name=scan.repo_name,
         branch=scan.branch,
+        target_url=scan.target_url,
         status=scan.status,
         created_at=scan.created_at.isoformat() if scan.created_at else "",
         finished_at=scan.finished_at.isoformat() if scan.finished_at else None,

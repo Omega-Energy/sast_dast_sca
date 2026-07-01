@@ -380,6 +380,11 @@ export default function ScanDetail() {
                 {dastMeta?.target_url && (
                   <div className="px-6 py-2 text-xs text-slate-500">
                     Target: <span className="font-mono text-indigo-400">{dastMeta.target_url}</span>
+                    {dastMeta?.tool && (
+                      <span className="ml-3 px-2 py-0.5 rounded bg-surface2 border border-border text-slate-400">
+                        tool: {dastMeta.tool}
+                      </span>
+                    )}
                   </div>
                 )}
                 <FindingsTable
