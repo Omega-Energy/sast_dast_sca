@@ -39,6 +39,7 @@ COPY trust-gateway/connectors/ ./connectors/
 
 # Built-in YARA rules
 COPY trust-gateway/api/yara_rules/ /app/yara_rules/
+COPY security-policy-as-code/yara-rules/ /app/yara_rules/
 
 # Frontend built assets
 COPY --from=frontend-builder /frontend/dist /app/static
